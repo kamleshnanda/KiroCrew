@@ -7559,6 +7559,32 @@ def _is_junction_fallback(path: str | os.PathLike) -> bool:
 _IO_REPARSE_TAG_NAME_SURROGATE = 0x20000000
 
 
+def stat_identity_token(info: os.stat_result | None) -> str | None:
+    """Portable identity of the REGULAR FILE *info* describes: ``"<inode>:<size>"``.
+
+    *info* must come from an ``lstat`` (or a pinned read), so a link is judged
+    as itself and never followed. None for a link, a directory, a device, a
+    name-surrogate reparse point, or a platform that reports no file index
+    (``st_ino`` of 0). The device number is left out on purpose: Windows
+    reports ``st_dev`` differently across stat calls on some volumes, and a
+    caller always compares entries of ONE directory, where the inode alone is
+    unique. Equal tokens therefore mean the same file on every platform.
+    """
+    if info is None or not stat.S_ISREG(info.st_mode) or lstat_is_name_surrogate(info):
+        return None
+    if not info.st_ino:
+        return None
+    return f"{info.st_ino}:{info.st_size}"
+
+
+def file_identity_token(path: str | os.PathLike) -> str | None:
+    """:func:`stat_identity_token` of the file AT *path*, read without following a link."""
+    try:
+        return stat_identity_token(os.lstat(path))
+    except (OSError, ValueError):
+        return None
+
+
 def lstat_is_name_surrogate(info: os.stat_result) -> bool:
     """True when an ``lstat`` result is a Windows link to another name.
 
@@ -7869,6 +7895,16 @@ class PinnedDirectory:
             return False
         info = self._lstat(name)
         return info is not None and stat.S_ISDIR(info.st_mode)
+
+    def identity_token(self, name: str) -> str | None:
+        """:func:`stat_identity_token` of the regular file *name* in this directory.
+
+        Read with the pin's own ``lstat``, so a link at the name yields None and
+        its target is never touched; a directory or device yields None too.
+        """
+        if self.is_link(name):
+            return None
+        return stat_identity_token(self._lstat(name))
 
     def unlink(self, name: str) -> None:
         """Remove the non-directory *name*. A link is removed, never its target."""
