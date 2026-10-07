@@ -652,6 +652,40 @@ class TestARelocatedScratchRootIsCoveredToo:
         monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(config_dir() / "scratch"))
         assert sandbox._relocated_scratch_root_target() == []
 
+    def test_override_nested_under_default_adds_no_nested_mask(self, monkeypatch, tmp_path):
+        # Regression: an override nested INSIDE the default scratch root is already covered
+        # by the ``scratch`` leaf's ancestor mask. Emitting it again as a nested target made
+        # the ancestor mask recreate the directory with a new inode on per-session scratch
+        # allocation, and the nested mask's _pin_mount_path then rejected the identity
+        # mismatch and aborted the launcher before the agent started. No extra rule is added.
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home" / ".kiro" / "crew"))
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(config_dir() / "scratch" / "moved"))
+        assert sandbox._relocated_scratch_root_target() == []
+
+    @pytest.mark.parametrize("leaf", ["work", "scratch", "diag"])
+    def test_override_nested_under_any_hidden_leaf_adds_no_nested_mask(
+        self, monkeypatch, tmp_path, leaf
+    ):
+        # Same abort, generalized: an override under ANY hidden crew leaf (not only
+        # ``scratch``) -- e.g. ``<data home>/work/tmp`` -- is already covered by that leaf's
+        # mask, and a redundant scratch mask nested under it aborts the launcher. The leaf is
+        # parametrized to prove the suppression is not special-cased to ``scratch``.
+        from kiro_crew.config.paths import config_dir
+
+        assert leaf in sandbox._CREW_HIDDEN_LEAVES
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home" / ".kiro" / "crew"))
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(config_dir() / leaf / "tmp"))
+        assert sandbox._relocated_scratch_root_target() == []
+
+    def test_override_outside_default_still_adds_its_rule(self, monkeypatch, tmp_path):
+        # The fix must not swallow a genuine relocation: a sibling of (not nested under) the
+        # default scratch root still needs its own mask so the window is not left unmasked.
+        root = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(root))
+        assert sandbox._relocated_scratch_root_target() == [os.path.normpath(str(root.resolve()))]
+
     def test_a_resolution_failure_never_breaks_a_spawn(self, monkeypatch):
         def _boom() -> object:
             raise RuntimeError("no override")
