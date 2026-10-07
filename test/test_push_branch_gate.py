@@ -208,6 +208,76 @@ class TestIsGitPublishDetection:
         assert _is_git_publish("echo $git is set") is False
 
 
+class TestGitPushNonPlainPreverbIsDeniedFailSafe:
+    """Fail-closed allowlist: a word up to and including the git subcommand
+    position is trusted ONLY if it fully matches a strict literal pattern --
+    ASCII letters, digits and ``_ . / = : -``. Any other word (a quote, ``$``,
+    backtick, ``( ) [ ] { } * ? ! @ ~``, a newline or a backslash) means the
+    shell can rewrite the word, so the subcommand cannot be trusted and the
+    command is treated as a possible publish for the floor to judge (it denies on
+    a protected target). ONE rule covers every shell construct and fails closed
+    on an unmodelled one. The cost is accepted over-refusals of read-only
+    commands whose prefix uses a metacharacter (``git -C ~/x status``,
+    ``git status; ls``).
+    """
+
+    def test_every_reviewed_construct_table(self) -> None:
+        """One table over the shell constructs that can hide a git publish. The
+        PUBLISH cases must DENY (a protected push reachable through the
+        construct); the plain read-only cases must ALLOW (every pre-subcommand
+        word strictly literal)."""
+        P = "pus" + "h"
+        nl = chr(10)
+        must_deny = (
+            # extglob @(...)
+            "git @(missing_8459) %s origin main" % P,
+            "bash -O extglob -O nullglob -c 'git @(x) %s origin main'" % P,
+            # a trailing comment with an apostrophe, then a newline, then a force
+            # push to a protected branch
+            "git %s origin feat # don't%sgit %s --force origin main" % (P, nl, P),
+            # glued command operators
+            "x&git $@ %s origin main" % P,
+            "ok;git $@ %s origin main" % P,
+            "a|git $@ %s origin main" % P,
+            "git {,%s} origin main" % P,  # brace expansion as subcommand
+            # wrapper keywords (plain and with options) running a protected push
+            "env git %s origin main" % P,
+            "eval git %s origin main" % P,
+            "env -C /tmp git $X %s origin main" % P,
+            "timeout 5 git $X %s origin main" % P,
+            "exec -a foo git $X %s origin main" % P,
+            "nice -n 5 git $@ %s origin main" % P,
+            # heredoc body line
+            "cat <<'EOF'%sgit $R %s origin main%sEOF" % (nl, P, nl),
+            # expansions / substitutions in the subcommand prefix or position
+            "git $@ %s origin main" % P,
+            'git "$HOME" origin main',
+            "git ~ origin main",
+            "git -C $R stash %s" % P,
+            "git $(printf %s) origin main" % P,
+            'git --namespace="team one" %s origin main' % P,
+        )
+        must_allow = (
+            "git %s origin my-feature" % P,  # plain feature push (floor allows)
+            "VAR=val git %s origin my-feature" % P,  # plain assignment prefix
+            "git %s origin my-feature 2>&1" % P,  # modelled redirection
+            "git status",
+            "git -C /abs/path status",
+            "git -C /abs/path stash %s" % P,  # plain prefix, non-protected stash
+            "git log --oneline -20",
+            "git fetch origin main",
+            "git add *.py",  # glob AFTER a plain non-push subcommand
+            "git diff *.py",
+            "command -v git",
+            "grep hello *.py",
+            "echo done",
+        )
+        for cmd in must_deny:
+            assert is_denied(cmd) is not None, cmd
+        for cmd in must_allow:
+            assert is_denied(cmd) is None, cmd
+
+
 @pytest.fixture
 def captured_sel_events(monkeypatch):
     """Capture SEL events without real I/O (isolate the ambient forensic log)."""

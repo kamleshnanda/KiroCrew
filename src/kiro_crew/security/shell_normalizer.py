@@ -2918,8 +2918,246 @@ def _split_shell_words(segment: str) -> list[str]:
     return words
 
 
-# The product name as a WHOLE program name (bare or the tail of a path), which is
-# what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
+# Git global flags that consume a separate argument token (they appear between
+# ``git`` and the subcommand). Shared by the opaque-preverb detector below and
+# by ``argv_floor._is_git_push_via_normalizer``'s subcommand seek. These are the
+# git global options that take a SEPARATE value word; a value given with ``=``
+# (``--git-dir=/x``) is self-contained and is matched by the ``=`` check in the
+# seek, not by membership here. The whole set is listed, not just ``-c``/``-C``,
+# so an option's value word is never mistaken for the subcommand.
+_GIT_ARG_FLAGS = frozenset(
+    {
+        "-c",
+        "-C",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--exec-path",
+        "--config-env",
+        "--attr-source",
+        "--super-prefix",
+    }
+)
+
+
+def _resolves_to_git(token: str) -> bool:
+    """True when *token* in command-word position names the git program.
+
+    Resolves the token through :func:`_shell_tokens` — the module's own argv
+    tokenizer — so EVERY spelling bash hands to exec as ``git`` is recognised:
+    the bare word, a path whose basename is ``git`` (``/usr/bin/git``), quoted
+    forms (``'git'`` / ``"git"``), empty-string concatenation (``g""it``), and
+    ANSI-C / locale quoting anywhere in the word (``$'git'``, ``g$'it'``,
+    ``$"git"``). Hand-rolled dequoting missed the embedded-ANSI-C case
+    (``g$'it'`` read as ``g$it``); the tokenizer does not. A program-position
+    EXPANSION (``$GIT``, ``${GIT}``, ``$(echo git)``) does NOT resolve to git
+    here — ``_shell_tokens`` performs no variable or command-substitution
+    expansion — which is correct: that case is the publish floor's
+    substitution-program regex's job, not this literal check.
+    """
+    tokens = _shell_tokens(_cut_at_operator(token))
+    if not tokens:
+        return False
+    resolved = tokens[0]
+    return resolved == "git" or os.path.basename(resolved) == "git"
+
+
+def _word_lexes_empty(word: str) -> bool:
+    """True when *word* resolves to NO characters -- a quoted or ANSI-C empty
+    string (``""``, ``''``, ``$''``). Such a word expands to zero words, so bash
+    removes it and it cannot shift the subcommand; distinct from a variable-arity
+    expansion like ``$@`` (which lexes to ``$@``). A quote delimiter is not
+    content; a whitespace-only quoted word (``" "``) is NOT empty.
+    """
+    for step in _iter_shell_chars(word):
+        if step.trailing_escape:
+            return False
+        if step.char in "'\"":
+            continue
+        if step.char.strip():
+            return False
+    return True
+
+
+def _resolves_to_publish_subcommand(token: str) -> bool:
+    """True when *token* in subcommand position resolves to a publish subcommand
+    (``push``). Resolved through :func:`_shell_tokens`, the module's own argv
+    tokenizer, so every spelling bash hands to git is recognised -- the bare
+    word, quoted (``'push'`` / ``"push"``), concatenated (``pu""sh``) and ANSI-C
+    (``$'push'``, ``p$'ush'``). A plain string compare missed ``$'push'``, which
+    bash runs as ``push``.
+    """
+    tokens = _shell_tokens(_cut_at_operator(token))
+    return bool(tokens) and tokens[0] in _PUBLISH_SUBCOMMANDS
+
+
+#: The git subcommands this floor gates as a publish. The git-publish gate is
+#: push-specific; other spellings are handled by passes 1-2.
+_PUBLISH_SUBCOMMANDS = frozenset({"push"})
+
+
+def _git_segment_has_opaque_preverb(segment: str) -> bool:
+    """Fail-safe: deny a git invocation whose SUBCOMMAND POSITION cannot be
+    verified as a plain publish. Narrowly scoped so ordinary git usage is
+    untouched.
+
+    1. The segment is split into background groups only on a STANDALONE ``&``
+       word at span depth zero. A ``&`` glued into a word (``ok&git``) or inside
+       a ``$(...)``/backtick/quote span is NOT a boundary -- the glued word is
+       judged whole and counts as non-plain in step 3. ``;``/``&&``/``||``/
+       newline are handled by the upstream segment splitter.
+    2. In a group, walk the command-position prefix (leading assignments,
+       redirections, grouping and command-position reserved words) to the
+       command word, consuming any ``$(...)``/backtick/quote span torn across
+       words. A prefix keyword (``time``/``exec``/``eval``/``command``/``env``/
+       ``builtin``) is transparent -- the walk continues from the word it runs,
+       so the real git subcommand is judged (``eval git status`` -> ``status``).
+    3. If the command word resolves to ``git`` (:func:`_resolves_to_git`), walk
+       to the first PLAIN non-option word (the candidate subcommand). If ANY word
+       up to AND INCLUDING the subcommand position is non-plain
+       (:func:`_prefix_word_is_nonplain` -- any ``$`` expansion quoted or not, a
+       redirection, a glob, or a word with a glued ``&``/``;``/backtick), the
+       position is unverifiable and it denies on its own -- NO later literal
+       ``push`` word is required, since an expansion can become any subcommand.
+       A value-taking global option's VALUE is the one place a non-plain word is
+       read precisely: a DETERMINISTIC value (:func:`_is_deterministic_value_word`
+       -- a leading-tilde path, a wholly quoted word whose expansion cannot
+       change the word count) occupies one fixed slot and is skipped, so
+       ``git -C ~/x status`` and ``git -C "$HOME/x" log`` are allowed. A fully
+       PLAIN prefix is read precisely: the real subcommand decides
+       (``git -C /abs stash push`` allows, ``git -C . push`` denies). The
+       accepted fail-safe cost is that a NON-DETERMINISTIC expansion in the
+       prefix denies even a read-only subcommand (``git -C $R log``, unquoted
+       ``git -C $HOME/x log``); the deny message says to cd into the repo or use
+       a literal or quoted path.
+
+    A deny here means the push target is unverifiable, the fail-safe direction.
+    A git publish NESTED in a substitution span (``cat <(git push origin main)``)
+    is already caught upstream -- passes 1-2 read every ``$(...)``/``<(...)`` body
+    and run the publish detector on it -- so it is not re-checked here.
+    """
+    # Split into background groups only on a STANDALONE ``&`` word, and only at
+    # span depth zero -- a ``&`` glued inside a word (``ok&git``) or inside a
+    # ``$(...)``/backtick/quote span is NOT a command boundary (a glued word is
+    # judged whole and counts as non-plain in the prefix rule). ``;``/``&&``/
+    # ``||``/newline were already handled by the upstream segment splitter.
+    words = _split_shell_words(segment)
+    group: list[str] = []
+    depth = 0
+    state = 0
+    ansi = False
+    backtick = False
+
+    def _advance(w: str) -> None:
+        nonlocal depth, state, ansi, backtick
+        walk = _shell_quote_walk(w, state=state, ansi=ansi)
+        depth += walk.paren_delta
+        state, ansi = walk.end_state, walk.end_ansi
+        for step in _iter_shell_chars(w):
+            if step.active and step.char == "`":
+                backtick = not backtick
+
+    for word in words:
+        in_span = depth > 0 or state != 0 or backtick
+        if not in_span and word == "&":  # standalone background op -> boundary
+            if _group_is_unverifiable_git_push(group):
+                return True
+            group = []
+            _advance(word)
+            continue
+        group.append(word)
+        _advance(word)
+    return _group_is_unverifiable_git_push(group)
+
+
+def _group_is_unverifiable_git_push(words: list[str]) -> bool:
+    """The per-group core of :func:`_git_segment_has_opaque_preverb`: *words* is
+    one command's word list (already split off at any standalone ``&``).
+
+    FAIL-CLOSED ALLOWLIST (lead ruling, supersedes the per-construct parsers).
+    Rather than model each shell construct that can sit before the git
+    subcommand, this applies ONE rule: a word up to and including the subcommand
+    position is trusted only if it FULLY matches a strict literal pattern
+    (:data:`_STRICT_PLAIN_WORD_RE` -- letters, digits and ``_ . / = : -`` only).
+    Any other word -- anything carrying a quote, ``$``, backtick, ``( ) [ ] { }
+    * ? ! @ ~``, a newline or a backslash -- means the shell can rewrite the
+    word, so the subcommand position cannot be trusted: the command is treated
+    as a possible publish and the existing floor judges it (it denies on a
+    protected target). This closes every shell construct at once -- extglob
+    ``@(...)``, brace/glob expansions, glued operators, wrapper keywords with
+    their options, command substitutions -- and fails closed on an unmodelled
+    one, at the accepted cost of refusing some read-only commands whose prefix
+    uses a metacharacter (a loud, recoverable denial). A word that lexes to the
+    empty string (``""``/``''``) is skipped: it expands to nothing and cannot
+    shift the subcommand.
+    """
+    n = len(words)
+    i = 0
+    while i < n:
+        word = words[i]
+        if not word.strip() or _word_lexes_empty(word):
+            i += 1
+            continue
+        if _resolves_to_git(word):
+            break
+        if _STRICT_PLAIN_WORD_RE.fullmatch(word):
+            i += 1  # a strictly-plain command-position word (assignment, path,
+            continue  # wrapper keyword, option) -- keep scanning for git
+        # A non-plain word BEFORE any git word: a leading assignment/redirection
+        # whose value the shell rewrites, or a wrapper argument. It cannot be
+        # read precisely, and a git publish may follow it, so the position is
+        # untrusted.
+        return _any_git_and_push_word(words[i:])
+    if i >= n or not _resolves_to_git(words[i]):
+        return False  # not a git command -- not this pass's concern
+
+    # Walk from the git word to the first strictly-plain non-option word (the
+    # subcommand). If ANY word up to and INCLUDING that position is NOT strictly
+    # plain, the subcommand is untrusted -> treat as a possible publish (deny).
+    i += 1  # past git
+    while i < n:
+        word = words[i]
+        if not word.strip() or _word_lexes_empty(word):
+            i += 1  # whitespace, or a word that expands to nothing (``""``)
+            continue
+        if not _STRICT_PLAIN_WORD_RE.fullmatch(word):
+            return True  # non-plain word up to/including the subcommand
+        if word.startswith("-"):
+            i += 1  # a plain global flag or ``--opt=value``; value (if any) next
+            continue
+        # First strictly-plain non-option word: the subcommand. Publish -> deny.
+        return _resolves_to_publish_subcommand(word)
+    return False  # git with no subcommand -- not a publish
+
+
+#: A command-position word is trusted ONLY if it fully matches this strict
+#: literal pattern: ASCII letters, digits and ``_ . / = : -``. Everything else
+#: -- any quote, ``$ ` ( ) [ ] { } * ? ! @ ~``, whitespace/newline, a backslash
+#: -- means the shell can rewrite the word, so it is NOT trusted and the git
+#: subcommand position after it is unverifiable. Note ``@`` and ``~`` are
+#: excluded (so ``@(...)`` extglob and ``~`` expansion are non-plain); refspecs
+#: like ``origin/main`` stay plain via ``/``.
+_STRICT_PLAIN_WORD_RE = re.compile(r"[A-Za-z0-9_./=:-]+")
+
+
+def _any_git_and_push_word(words: list[str]) -> bool:
+    """True when, after an untrusted command-position word, a later word still
+    resolves to git AND a ``push`` subcommand word appears -- so a protected
+    publish may be hiding behind the untrusted prefix. Coarse by design: it does
+    not resolve the exact command, only whether a git publish could be present,
+    which is the fail-closed reading the floor then judges. A git or push word
+    GLUED to an operator (``x&git``, ``;push``) is recovered by cutting at the
+    operator, so a hidden invocation is not missed.
+    """
+    saw_git = False
+    for w in words:
+        cut = _cut_at_operator(w)
+        tail = w.rsplit("&", 1)[-1].rsplit(";", 1)[-1].rsplit("|", 1)[-1]
+        if _resolves_to_git(w) or _resolves_to_git(cut) or _resolves_to_git(tail):
+            saw_git = True
+        if saw_git and _resolves_to_publish_subcommand(_dequote_token(cut)):
+            return True
+    return False
 
 
 def _is_self_program(token: str) -> bool:

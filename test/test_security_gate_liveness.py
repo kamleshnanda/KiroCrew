@@ -208,7 +208,27 @@ def _url_payload_command(n: int) -> str:
 #: window crossing that commit's opening ``/`` with twelve of its digits, one clause
 #: beside the separator ceiling, and the docstring naming them. No pass widened and
 #: no existing threshold moved.
-_PACKAGE_LINE_BUDGET = 28_631
+#:
+#: Raised for the git-publish floor's subcommand-prefix non-plain fail-safe in
+#: ``shell_normalizer`` (``_group_is_unverifiable_git_push``). A git publish whose
+#: subcommand position cannot be verified as plain is denied, with ONE fail-closed
+#: allowlist instead of a per-construct parser. The detector splits a segment into
+#: background groups on a STANDALONE ``&`` word, then walks each group's
+#: command-position words for ``git``; a word up to and including the first
+#: strictly-plain non-option word (the subcommand) is trusted only if it fully
+#: matches ``_STRICT_PLAIN_WORD_RE`` (``[A-Za-z0-9_./=:-]``). Any word carrying a
+#: quote, ``$``, backtick, ``( ) [ ] { } * ? ! @ ~``, a newline or a backslash
+#: means the shell can rewrite it, so the subcommand cannot be trusted and the
+#: command is treated as a possible publish for the floor to judge (decline on a
+#: protected target). A word that lexes to the empty string is skipped. This
+#: closes every unmodelled shell construct at once (extglob, brace/glob expansion,
+#: glued operators, wrapper keywords, command substitution, quoted expansions) and
+#: fails closed on a new one. The accepted cost is over-refusal of a read-only
+#: command whose pre-subcommand prefix uses a metacharacter -- a loud, recoverable
+#: denial. The whole pass is wrapped FAIL-CLOSED in ``argv_floor``: any unexpected
+#: exception is treated as a publish. It reuses ``_split_shell_words``, the one
+#: quote machine and ``_resolves_to_git``; no new lexer and no threshold moved.
+_PACKAGE_LINE_BUDGET = 28904
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
