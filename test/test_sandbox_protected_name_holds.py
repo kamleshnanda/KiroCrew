@@ -328,7 +328,17 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   read-only so an agent cannot choose whether a chaining loop is detected.
     #:   The spawn mints it before sealing and it never changes after that, so no
     #:   later host-side replace lands on the bound name.
-    EXPECTED: dict[str, int] = {"standard": 268, "cc": 275, "strict": 276}
+    #: * ``microvm_crews.json`` -- the microvm lane's crew records. Each row
+    #:   carries the ``microvm_id`` that ``teardown`` hands to
+    #:   ``launcher.terminate``, with no tag to disagree with it and no
+    #:   describe-and-confirm step in front of it, so a writable copy lets a
+    #:   sandboxed process choose which of the owner's VMs the next delete
+    #:   destroys. It sits at the data-home root beside ``cloud.json`` and
+    #:   ``cloud_launch_state.json``, which the gateway writes and which the root
+    #:   itself must stay writable for, so no enclosing directory mask can hold
+    #:   it and leaf-only is the only hold available -- the same reason those two
+    #:   are leaf-only.
+    EXPECTED: dict[str, int] = {"standard": 271, "cc": 278, "strict": 279}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
