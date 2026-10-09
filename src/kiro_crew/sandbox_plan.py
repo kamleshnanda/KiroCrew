@@ -172,6 +172,9 @@ class PlanHost:
     voice_runtime_ancestor_guards: tuple[str, ...] = ()
     #: The resolved kiro agents tree, sealed read-only.
     kiro_agents_targets: tuple[str, ...] = ()
+    #: The running gateway's packaged install tree (both spellings), sealed read-only.
+    #: Empty for an editable or from-source checkout.
+    install_root_targets: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The real uid and gid the namespace launcher maps.
@@ -796,6 +799,10 @@ def _namespace_plan(
     readonly.extend(path for path in host.relocated_crew_readonly if path not in kept)
     # Same relocation hole for the kiro agents tree (fork governance's specs).
     readonly.extend(path for path in host.kiro_agents_targets if path not in kept)
+    # The gateway's own packaged install tree: what it executes on its next start. Not
+    # liftable by ``extra_visible_dirs`` (that list lifts masks, never seals), and the
+    # updater that legitimately writes it runs in the gateway process, unwrapped.
+    readonly.extend(path for path in host.install_root_targets if path not in kept)
     # The launcher re-applies a mask nested inside a private window after binding the
     # window, from a descriptor it already holds, so such a window is admitted here.
     windows, window_refusals = private_windows(
@@ -950,6 +957,7 @@ def _seatbelt_plan(
         [os.path.join(home, rel) for rel in host.crew_readonly_targets]
         + list(host.relocated_crew_readonly)
         + list(host.kiro_agents_targets)
+        + list(host.install_root_targets)
     )
     caller_targets = list(
         dict.fromkeys(absolute(path, host.cwd) for path in request.extra_hidden_dirs)
