@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew.acp._dispatch import classify_notification
+from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure
 from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
@@ -796,6 +797,12 @@ class McpSessionReport:
                 for name in self._failed
             ]
             parts.append("failed to start: " + _joined(described))
+        restart = self.restart_to_load()
+        if restart:
+            parts.append(
+                "failed with what looks like a missing or rejected credential (start a new "
+                "session to load it once the credential works): " + _joined(restart)
+            )
         if self._awaiting_auth:
             parts.append("awaiting authorization: " + _joined(list(self._awaiting_auth)))
         if self.unresolved_refs:
@@ -810,6 +817,20 @@ class McpSessionReport:
                 + (f" (+{self.no_tools_omitted} not listed)" if self.no_tools_omitted else "")
             )
         return "; ".join(parts)
+
+    def restart_to_load(self) -> list[str]:
+        """Failed servers whose reason reads as a missing or rejected credential.
+
+        Such a server can work once a credential exists, but an engine
+        initializes a failed server again only when Crew can ask it to (see
+        :mod:`kiro_crew.acp.mcp_reattempt`), and even there only a few times. A
+        new session always initializes it again, so these are the names the
+        user is told to restart the session for, instead of a failure that
+        reads as permanent. Names only: the reason is the server's own output.
+        """
+        return [
+            name for name in self._failed if is_recoverable_auth_failure(self._failures.get(name))
+        ]
 
     def payload(self) -> dict[str, Any] | None:
         """The serialized report, or ``None`` when no session has begun.
@@ -838,4 +859,5 @@ class McpSessionReport:
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),
             "failures": dict(self._failures),
+            "restart_to_load": self.restart_to_load(),
         }
