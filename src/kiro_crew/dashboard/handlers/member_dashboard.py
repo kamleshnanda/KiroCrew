@@ -499,6 +499,7 @@ def read_fields(slug: str, member: str, manifest: Any) -> Any:
     shown are the values the reader sees. File IO; raises on a failed read.
     """
     from kiro_crew.crew_log import projection
+    from kiro_crew.crew_log.entry_types import DASHBOARD_FOLD_NAME
     from kiro_crew.dashboard_feed import DashboardFeed
 
     slot = _dashboard_slot(member, slug)
@@ -507,7 +508,11 @@ def read_fields(slug: str, member: str, manifest: Any) -> Any:
         feed.subscribe(manifest)
         agentic: Any = {}
         if any(spec.agentic for spec in manifest.fields.values()):
-            agentic = projection.read_slot_projection(slot, "agentic").value
+            # THROUGH THE CONSTANT, never the literal. ``read_slot_projection``
+            # refuses a name the registry does not serve, so a literal fold name here
+            # is one that goes stale silently the moment the registry moves: every
+            # agent-written cell on the page reads empty with nothing raised.
+            agentic = projection.read_slot_projection(slot, DASHBOARD_FOLD_NAME).value
         return feed.read(manifest, agentic if isinstance(agentic, dict) else {})
     finally:
         feed.unsubscribe()

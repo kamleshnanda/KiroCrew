@@ -76,8 +76,10 @@ from kiro_crew.crew_log.entry_types import (
     DASHBOARD_CODE_LIMIT,
     DASHBOARD_FIELD_LIMIT,
     DASHBOARD_FOLD_NAME,
+    DASHBOARD_HISTORY_LIMIT,
     DASHBOARD_REASON_LIMIT,
     DASHBOARD_REFUSED_ENTRY_TYPE,
+    DASHBOARD_SOURCE_LIMIT,
     DASHBOARD_TYPE_LIMIT,
     DASHBOARD_VALUE_BYTES,
     DASHBOARD_VALUE_LIMIT,
@@ -3930,10 +3932,13 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
         return units_in_succession(slot)
     if name == DASHBOARD_FOLD_NAME:
         # Nor here, and for the reason the panel fold gives: this fold keeps the LATEST
-        # value per field, so whichever unit is folded last wins each cell. A backward
+        # value per key, so whichever unit is folded last wins each cell. A backward
         # clock step between two units of one slot sorts the retired unit last under the
         # header clock, and its stale value would then overwrite a value the live session
         # wrote and the write path accepted -- silently, because both are well-formed.
+        # The per-key history makes that worse rather than better: the order units are
+        # folded in IS the order the history reads, so an inverted pair would also
+        # record the trend backwards.
         return units_in_succession(slot)
     return session_units_for_slot(slot)
 
@@ -3988,9 +3993,23 @@ _SLOT_FOLD_ROW_BYTES: Final[dict[str, int]] = {
     # an item with title, summary and decision at their clamps; its acceptance and
     # artifacts have no clamp and are charged per container (``_work_opaque``)
     "work": 2_705,
-    # one agentic field: its value at DASHBOARD_VALUE_BYTES, plus the field name,
-    # the declared type, the stamp and the ownership digest
-    "agentic": 8_400,
+    # one stored custom VALUE (8,422 measured) -- a key's latest or one of its
+    # retained past ones, which are the same shape: the value at
+    # DASHBOARD_VALUE_BYTES, plus the field name, the declared type, the stamp, the
+    # ownership digest and the source tag.
+    #
+    # PER VALUE and not per key, which is what let widening the fold into a per-key
+    # history move this figure by 22 bytes rather than multiplying it: a key's
+    # history is charged by ``_custom_rows`` counting INTO it, so the cap-state is
+    # DASHBOARD_VALUE_LIMIT x (1 + DASHBOARD_HISTORY_LIMIT) = 384 rows ~ 3.2 MiB,
+    # against 0.5 MiB before. The 22 bytes are the ``source`` tag the widening added.
+    #
+    # ABOVE the measurement by 78 bytes, which the test's 10x band allows and which
+    # the clamp requires: the fixture drives ``src`` as ``gateway``, 7 characters,
+    # while DASHBOARD_SOURCE_LIMIT admits 64 -- an ``app:<name>`` guest reaches that
+    # -- so the widest row of this fold is 57 bytes past what any log whose ``src``
+    # the schema validates can be driven to.
+    "custom": 8_500,
     # one mistake group: code, field and reason at their clamps, the ownership
     # digest, two stamps and the bounded correction list (772 measured)
     "mistakes": 1_100,
@@ -7493,19 +7512,49 @@ def _dashboard_type_holds(declared: str, value: Any) -> bool:
     return False
 
 
-def _agentic_start() -> dict[str, Any]:
-    """One slot's agentic values: the latest per FIELD, and what was evicted.
+def _custom_start() -> dict[str, Any]:
+    """One slot's custom values: per KEY, the latest and its last few, plus evictions.
 
     Keyed by field rather than holding one document, because the fields are
     independent cells: a crewmate that learns one number writes that one, and a
     whole-document fold would make it restate the other twenty-three to report it.
     That is the one place this fold parts company with ``panel``, whose entry
     replaces a whole published panel.
+
+    Each key keeps the superseded values too, up to
+    :data:`~kiro_crew.crew_log.entry_types.DASHBOARD_HISTORY_LIMIT`, newest last. The
+    latest value answers "what is this cell", and the history answers "which way is it
+    going" -- which is a question a page could not ask of this fold at all before, and
+    which no side store is allowed to answer (the log is the dashboard's only record).
     """
     return {"fields": {}, "fields_omitted": 0, "wrote": 0}
 
 
-def _agentic_step(state: dict[str, Any], entry: Entry) -> None:
+def _custom_value_row(entry: Entry, declared: str, value: Any) -> dict[str, Any]:
+    """One stored value: the shape a latest row and a history row BOTH have.
+
+    ONE shape, so a reader -- a page drawing a sparkline, the data-type catalogue
+    describing this fold -- has a single row kind to understand whether the value it
+    holds is current or superseded. ``order`` is the fold's own eviction ranking and
+    is not part of it; the caller adds that to the latest row only.
+    """
+    return {
+        # UNWRAPPED for the reader. The wrapper is an artefact of what the entry
+        # registry can declare, and a reader of this fold should not have to know
+        # about it: a template's field is a value, not a value in a box.
+        "value": value,
+        "type": declared,
+        "at": _panel_iso(entry.time),
+        "instance_version": _as_int(entry.data.get("instance_version")),
+        "crew_key": _panel_text(entry.data.get("crew_key"), PANEL_CREW_KEY_LIMIT),
+        # WHICH WRITER put this value here, re-clamped like every other text this
+        # fold keeps. It is on the envelope rather than in the payload, so a planted
+        # ``data`` cannot claim it: the appender decides ``src``.
+        "source": _panel_text(entry.src, DASHBOARD_SOURCE_LIMIT),
+    }
+
+
+def _custom_step(state: dict[str, Any], entry: Entry) -> None:
     if entry.type != DASHBOARD_AGENTIC_ENTRY_TYPE:
         return
     data = entry.data
@@ -7525,10 +7574,14 @@ def _agentic_step(state: dict[str, Any], entry: Entry) -> None:
         return
     value = wrapper["v"]
     # THE TYPE IS RE-CHECKED, not taken on the writer's word. The write path checked
-    # it against the live manifest, but the entry is on disk and the reader is a
+    # it against the live Model, but the entry is on disk and the reader is a
     # different process at a different time: a line whose declared type and value
     # disagree is exactly the corruption this re-check exists to drop, and applying
     # it would put a string in a cell a chart reads as a number.
+    #
+    # The SIZE is re-checked here too, and that check is what bounds the history: a
+    # key retains at most DASHBOARD_HISTORY_LIMIT past values and every one of them
+    # came through this gate, so each is under DASHBOARD_VALUE_BYTES.
     if not _dashboard_type_holds(declared, value) or not _dashboard_value_fits(value):
         return
     fields: dict[str, Any] = state["fields"]
@@ -7542,40 +7595,70 @@ def _agentic_step(state: dict[str, Any], entry: Entry) -> None:
         del fields[oldest]
         state["fields_omitted"] = _as_int(state.get("fields_omitted")) + 1
     state["wrote"] = _as_int(state.get("wrote")) + 1
-    fields[name] = {
-        # UNWRAPPED for the reader. The wrapper is an artefact of what the entry
-        # registry can declare, and a reader of this fold should not have to know
-        # about it: a template's field is a value, not a value in a box.
-        "value": value,
-        "type": declared,
-        "at": _panel_iso(entry.time),
-        "instance_version": _as_int(data.get("instance_version")),
-        "crew_key": _panel_text(data.get("crew_key"), PANEL_CREW_KEY_LIMIT),
-        "order": state["wrote"],
-    }
+    previous = fields.get(name)
+    row = _custom_value_row(entry, declared, value)
+    row["order"] = state["wrote"]
+    history: list[Any] = []
+    if isinstance(previous, Mapping):
+        kept = previous.get("history")
+        history = list(kept) if isinstance(kept, list) else []
+        # The value this write SUPERSEDES goes on the end, so the history reads
+        # oldest first and newest last -- the order ``panel`` keeps its own history
+        # in, and the order every reader of this fold already expects.
+        history.append({key: previous[key] for key in previous if key not in ("order", "history")})
+        # TRIMMED FROM THE FRONT, so the oldest is what goes. Sliced rather than
+        # popped in a loop because a resumed savepoint can carry a longer list than
+        # this limit admits -- a build that retained more, or a limit since lowered
+        # -- and one pop would leave it one over forever.
+        if len(history) > DASHBOARD_HISTORY_LIMIT:
+            history = history[-DASHBOARD_HISTORY_LIMIT:]
+    row["history"] = history
+    fields[name] = row
 
 
-def _agentic_render(state: dict[str, Any]) -> dict[str, Any]:
-    """The agentic values, one row per field.
+def _custom_render(state: dict[str, Any]) -> dict[str, Any]:
+    """The custom values, one row per key, each carrying its own history.
 
     ``order`` is dropped: it is the fold's own eviction ranking and means nothing
     to a reader, who gets ``at`` for the same question. ``wrote`` counts ACCEPTED
     writes over the slot's whole life, which is what tells a reader "this crewmate
     is writing and the cell is still empty" from "this crewmate has never written".
+
+    ``history`` is COPIED rather than handed out, because this render's result is
+    returned to a reader while the state stays in the warm cell: a shared list is one
+    a caller can append to, and the next step would then trim a reader's edit as
+    though the fold had stored it.
     """
     fields: dict[str, Any] = state["fields"]
     return {
         "fields": {
-            name: {key: row[key] for key in row if key != "order"} for name, row in fields.items()
+            name: {
+                **{key: row[key] for key in row if key not in ("order", "history")},
+                "history": [dict(past) for past in row.get("history") or ()],
+            }
+            for name, row in fields.items()
         },
         "fields_omitted": _as_int(state.get("fields_omitted")),
         "wrote": _as_int(state.get("wrote")),
     }
 
 
-def _agentic_rows(state: Mapping[str, Any]) -> int:
-    """``agentic``: one row per field, each holding one capped value."""
-    return _rows_in(state.get("fields"))
+def _custom_rows(state: Mapping[str, Any]) -> int:
+    """``custom``: one row per key, plus one per past value that key retains.
+
+    COUNTED INTO each key, not stopped at the top level, because a key's history is a
+    list of capped values nested inside it -- the same nesting that makes ``work``'s
+    counter walk into each item's event tail. A counter that returned the key count
+    would charge a cell holding 64 keys x 6 values as 64 rows, which is a sixth of
+    what it retains.
+    """
+    fields = state.get("fields")
+    total = _rows_in(fields)
+    if isinstance(fields, Mapping):
+        for row in fields.values():
+            if isinstance(row, Mapping):
+                total += _rows_in(row.get("history"))
+    return total
 
 
 def _mistake_key(code: str, field: str) -> str:
@@ -8242,11 +8325,19 @@ _FOLDS: Final[dict[str, _Fold]] = {
     # baseline, and its whole cost contract is O(fields) per read and never O(log).
     DASHBOARD_FOLD_NAME: _Fold(
         DASHBOARD_FOLD_NAME,
-        _agentic_start,
-        _agentic_step,
-        _agentic_render,
+        _custom_start,
+        _custom_step,
+        _custom_render,
         affects=frozenset({DASHBOARD_AGENTIC_ENTRY_TYPE}),
-        count_rows=_agentic_rows,
+        count_rows=_custom_rows,
+        # MOVED, because what ``step`` stores changed: each key now retains its last
+        # few values and a ``source`` tag beside the latest. The keys a reader walks
+        # are the same ones, which is exactly the case ``state_version`` exists for --
+        # ``_state_matches_fold`` sees a shape it recognises, so a savepoint written
+        # before this would resume the old single-value rows onto logic that reads a
+        # ``history`` list, and the long sessions a savepoint speeds up are the ones
+        # that would serve a historyless cell for the life of the unit.
+        state_version=_FOLD_STATE_VERSION_BASE + 1,
     ),
     MISTAKES_FOLD_NAME: _Fold(
         MISTAKES_FOLD_NAME,

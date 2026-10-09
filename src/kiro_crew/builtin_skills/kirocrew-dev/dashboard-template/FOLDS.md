@@ -35,7 +35,7 @@ slot ran under.
 | `radar` | slot | An issue crew's items, counts, phase lines and recorded skips |
 | `work` | slot | A conductor's board: the header, every work item, and what the fold dropped |
 | `panel` | slot | The publisher's own record, in the shape the crew drawer consumes |
-| `agentic` | slot | Which dashboard fields this crewmate filled itself, with what value, of what declared type and when |
+| `custom` | slot | Which dashboard keys this crewmate filled itself: each one's latest value, of what declared type, from which writer and when, and the last few it replaced |
 | `mistakes` | slot | Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead |
 | `workstreams` | slot | Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
 
@@ -247,9 +247,9 @@ Moved by: `panel/published`.
 | `template` | `str` | no |
 | `title` | `str` | no |
 
-## `agentic`
+## `custom`
 
-Which dashboard fields this crewmate filled itself, with what value, of what declared type and when.
+Which dashboard keys this crewmate filled itself: each one's latest value, of what declared type, from which writer and when, and the last few it replaced.
 
 Moved by: `dashboard/agentic_value`.
 

@@ -1106,11 +1106,18 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
             },
             src=GATEWAY,
         )
-    elif name == "agentic":
-        # The WIDEST agentic row: a distinct field name per entry (so each adds a
+    elif name == "custom":
+        # The WIDEST custom row: a distinct field name per entry (so each adds a
         # counted row rather than replacing one) carrying a value at the fold's own
         # per-value byte ceiling. A string is the widest shape that reaches the
         # ceiling with no structural overhead.
+        #
+        # A DISTINCT field each time, which drives the LATEST row and not the history.
+        # That is deliberate: the two are the same shape, so one of them is the fold's
+        # widest kind and measuring it is what the charge has to cover. That a key's
+        # retained past values are charged a row EACH is the other half of the bound,
+        # and ``test_a_custom_cells_charge_counts_each_keys_retained_history`` drives
+        # it -- here it would muddy the marginal cost with two kinds at once.
         handle.append(
             "dashboard/agentic_value",
             {
@@ -1291,6 +1298,57 @@ def test_every_slot_folds_row_cost_is_derived_from_its_own_rows(name):
         "every row of this fold that figure -- re-measure and update _SLOT_FOLD_ROW_BYTES "
         "and docs/system-specs/modules/crew-log-projection.md"
     )
+
+
+def test_a_custom_cells_charge_counts_each_keys_retained_history():
+    """MUTATION-SENSITIVE: the ``custom`` fold's counter walks INTO each key.
+
+    ``_SLOT_FOLD_ROW_BYTES["custom"]`` is a charge per stored VALUE, not per key, which
+    is the only reason widening the fold into a per-key history left that figure where
+    it was. That split only holds if ``count_rows`` counts each retained past value as
+    a row of its own: a counter that returned the key count would charge a cell holding
+    64 keys x 6 values as 64 rows, and the warm-cell ceiling would then admit six times
+    the bytes it states.
+
+    Driven through the real log and the real eager fold rather than the step directly,
+    so it measures what the budget actually charges a warm cell.
+    """
+    slot = "dashboard:custom-history"
+    unit = "s-custom-history"
+    handle = _slot_log(unit, slot)
+    name = crew_log.DASHBOARD_FOLD_NAME
+    count = crew_log._FOLDS[name].count_rows
+
+    def _write(value: int) -> None:
+        handle.append(
+            "dashboard/agentic_value",
+            {"field": "one_key", "type": "number", "value": {"v": value}},
+            src=GATEWAY,
+        )
+
+    _write(0)
+    first = crew_log.fold_slot_warm(name, (unit,), slot=slot).state
+    assert count(first) == 1, "one key with no history must be charged exactly one row"
+    one_cell = crew_log.slot_fold_cell_bytes(name, first)
+
+    limit = crew_log.DASHBOARD_HISTORY_LIMIT
+    for value in range(1, limit + 4):
+        _write(value)
+    full = crew_log.fold_slot_warm(name, (unit,), slot=slot).state
+
+    assert len(full["fields"]) == 1, "the fixture wrote one key, so the key set must not grow"
+    kept = len(full["fields"]["one_key"]["history"])
+    assert kept == limit, f"the history is not bounded at {limit}: it holds {kept}"
+    assert count(full) == 1 + limit, (
+        "a key's retained past values are not being charged: the counter answered "
+        f"{count(full)} for a key holding 1 + {limit} values"
+    )
+    assert crew_log.slot_fold_cell_bytes(name, full) > one_cell
+    # And the charge is still an upper bound on what the cell really weighs, which is
+    # the property the per-value figure has to keep after the widening.
+    assert len(
+        json.dumps(full, ensure_ascii=False).encode("utf-8")
+    ) <= crew_log.slot_fold_cell_bytes(name, full)
 
 
 def test_a_cells_charge_counts_the_rows_nested_inside_each_item():

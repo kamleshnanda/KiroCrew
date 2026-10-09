@@ -691,13 +691,13 @@
       ]
     },
     {
-      "name": "agentic",
+      "name": "custom",
       "mode": "slot",
       "advertised": true,
       "affects": [
         "dashboard/agentic_value"
       ],
-      "answers": "Which dashboard fields this crewmate filled itself, with what value, of what declared type and when",
+      "answers": "Which dashboard keys this crewmate filled itself: each one's latest value, of what declared type, from which writer and when, and the last few it replaced",
       "fields": [
         {
           "name": "fields",

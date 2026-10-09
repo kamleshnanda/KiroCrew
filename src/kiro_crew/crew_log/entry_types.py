@@ -303,7 +303,48 @@ DASHBOARD_VALUE_BYTES = 8 * 1024
 #: written, so what survives is what the crewmate is still writing.
 DASHBOARD_VALUE_LIMIT = 64
 
-DASHBOARD_FOLD_NAME = "agentic"
+#: Past values one KEY of the custom fold keeps, newest last, beside its latest.
+#:
+#: A dashboard cell is read for one of two questions: what is it now, and which way
+#: is it going. The latest value answers the first and this answers the second, and
+#: five is what the second needs -- a delta wants the one before, and a short trend
+#: wants a handful. A longer series is a CHART, and a chart's points are an ``array``
+#: value in one key, checked against that key's declared shape, not a by-product of
+#: how many times the agent happened to write.
+#:
+#: It is also the number the fold's whole cap-state turns on. Each retained past
+#: value is charged a row of its own (:func:`projection._custom_rows`), so the
+#: fold's widest state is :data:`DASHBOARD_VALUE_LIMIT` keys x ``1 + this``, and five
+#: puts that at 384 rows -- about 3.2 MiB against the warm cell ceiling's 256 MiB,
+#: which keeps this the cheapest slot fold it already was. Ten would double it for
+#: points no cell draws.
+#:
+#: The LOG is still the archive. A value evicted from here was written as an entry
+#: and that entry is not deleted, so this bounds the fold's retained state, never
+#: the record.
+DASHBOARD_HISTORY_LIMIT = 5
+
+#: Characters one stored ``source`` tag may occupy.
+#:
+#: Re-applied by the fold for the reason the four limits above it are: a ``src`` comes
+#: off a file the reader does not control. The format's own emitters are short words
+#: (``gateway``, ``dashboard``) and its guest prefixes name an instance
+#: (``app:<name>``), so this is generous for every real one.
+DASHBOARD_SOURCE_LIMIT = 64
+
+#: The registry name of the fold a crewmate's own dashboard values are read from.
+#:
+#: It names WHAT THE FOLD HOLDS -- the values this dashboard carries that no other
+#: fold computes -- rather than who wrote them. Who wrote them is the manifest's job
+#: and the manifest says it with ``{"agentic": true}`` on a field's source. The two are
+#: separate vocabularies: this constant is a crew-log fold name a reader asks
+#: ``read_slot_projection`` for, and that key is a field source a Model declares, so
+#: neither moves with the other.
+#:
+#: ONE fold, with one entry type, one row charge and one slot cell, serving both of
+#: the questions a cell is read for: its latest value says what the cell is, and its
+#: last :data:`DASHBOARD_HISTORY_LIMIT` values say which way it is going.
+DASHBOARD_FOLD_NAME = "custom"
 
 #: Distinct ``(code, field)`` groups the mistake book retains.
 #:

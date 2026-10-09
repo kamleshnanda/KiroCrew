@@ -461,12 +461,27 @@ class TestTheCorrectionEntry:
 # -------------------------------------------------------------------------- #
 
 
-class TestTheAgenticFold:
+class TestTheCustomFold:
+    """What one slot's custom fold keeps: per key, the latest value AND its last few.
+
+    The cases above the history ones pin the acceptance rules -- which lines land,
+    which are dropped, how the key set is bounded -- because what a key RETAINS and
+    what the fold ACCEPTS are separate questions, and a change to the first must not
+    move the second.
+    """
+
     def fold(self, *entries: Entry) -> dict[str, Any]:
-        state = projection._agentic_start()
+        state = projection._custom_start()
         for item in entries:
-            projection._agentic_step(state, item)
-        return projection._agentic_render(state)
+            projection._custom_step(state, item)
+        return projection._custom_render(state)
+
+    def writes(self, field: str, *values: Any) -> tuple[Entry, ...]:
+        """One entry per value, all to *field*, in order."""
+        return tuple(
+            entry(AGENTIC, {"field": field, "type": "number", "value": {"v": v}}, n + 1)
+            for n, v in enumerate(values)
+        )
 
     def test_a_write_fills_one_field_and_leaves_the_others(self) -> None:
         """The fields are independent cells, which is where this fold parts company
@@ -528,6 +543,147 @@ class TestTheAgenticFold:
 
     def test_another_entry_type_does_not_move_it(self) -> None:
         assert self.fold(entry("panel/published", {"template": "x", "data": {}}))["wrote"] == 0
+
+    # -- the history, which is what the widening added ---------------------- #
+
+    def test_a_keys_first_value_has_no_history_to_show(self) -> None:
+        """An empty list rather than an absent key, so a reader drawing a trend has
+        one shape to read whether or not the cell has moved yet."""
+        read = self.fold(*self.writes("a", 1))
+        assert read["fields"]["a"]["value"] == 1
+        assert read["fields"]["a"]["history"] == []
+
+    def test_a_superseded_value_moves_into_that_keys_history_newest_last(self) -> None:
+        read = self.fold(*self.writes("a", 1, 2, 3))
+        row = read["fields"]["a"]
+        assert row["value"] == 3
+        assert [past["value"] for past in row["history"]] == [1, 2]
+
+    def test_history_is_per_key_and_keys_do_not_see_each_other(self) -> None:
+        """The whole reason this fold is keyed by field: a trend belongs to one cell,
+        and a shared list would read as that cell having moved when a sibling did."""
+        read = self.fold(
+            entry(AGENTIC, {"field": "a", "type": "number", "value": {"v": 1}}, 1),
+            entry(AGENTIC, {"field": "b", "type": "number", "value": {"v": 9}}, 2),
+            entry(AGENTIC, {"field": "a", "type": "number", "value": {"v": 2}}, 3),
+        )
+        assert [past["value"] for past in read["fields"]["a"]["history"]] == [1]
+        assert read["fields"]["b"]["history"] == []
+
+    def test_history_is_bounded_at_n_and_the_oldest_is_what_goes(self) -> None:
+        """The bound is what keeps the fold's row charge honest: every retained past
+        value is charged a row, so an unbounded history is an unbounded cell."""
+        limit = entry_types.DASHBOARD_HISTORY_LIMIT
+        over = limit + 4
+        read = self.fold(*self.writes("a", *range(over)))
+        row = read["fields"]["a"]
+        assert len(row["history"]) == limit
+        assert row["value"] == over - 1
+        # DROPS OLDEST FIRST: the surviving window is the most recent one, and the
+        # earliest values are gone rather than the latest being refused.
+        assert [past["value"] for past in row["history"]] == list(range(over - 1 - limit, over - 1))
+
+    def test_a_dropped_line_does_not_disturb_the_history(self) -> None:
+        """A planted or damaged line is skipped, and skipping it must not push the
+        live value into history -- which would record a change that never happened."""
+        read = self.fold(
+            entry(AGENTIC, {"field": "a", "type": "number", "value": {"v": 1}}, 1),
+            entry(AGENTIC, {"field": "a", "type": "number", "value": {"v": "seven"}}, 2),
+            entry(AGENTIC, {"field": "a", "type": "number"}, 3),
+        )
+        assert read["fields"]["a"]["value"] == 1
+        assert read["fields"]["a"]["history"] == []
+
+    def test_an_oversized_value_cannot_enter_the_history_either(self) -> None:
+        """The size gate runs before anything is stored, so every value a key retains
+        -- latest or past -- is under the per-value cap. That is the only bound on
+        what the history weighs."""
+        huge = "x" * (entry_types.DASHBOARD_VALUE_BYTES + 1)
+        read = self.fold(
+            entry(AGENTIC, {"field": "a", "type": "string", "value": {"v": "small"}}, 1),
+            entry(AGENTIC, {"field": "a", "type": "string", "value": {"v": huge}}, 2),
+        )
+        row = read["fields"]["a"]
+        assert row["value"] == "small"
+        assert row["history"] == []
+
+    def test_a_past_value_carries_the_same_columns_the_latest_does(self) -> None:
+        """ONE row shape for a stored value, current or superseded, so a reader has
+        one kind to understand -- minus ``order``, which is the fold's own ranking."""
+        read = self.fold(*self.writes("a", 1, 2))
+        row = read["fields"]["a"]
+        past = row["history"][0]
+        assert set(past) == {"value", "type", "at", "instance_version", "crew_key", "source"}
+        assert set(row) == set(past) | {"history"}
+        assert "order" not in past
+
+    def test_the_source_tag_is_the_envelopes_writer_not_the_payloads_claim(self) -> None:
+        """``src`` is set by whatever appended the line, so a planted ``data`` cannot
+        claim a writer it is not."""
+        lying = Entry(
+            type=AGENTIC,
+            seq=1,
+            time=1_759_000_000_001,
+            src="dashboard",
+            data={"field": "a", "type": "number", "value": {"v": 1}, "source": "gateway"},
+        )
+        assert self.fold(lying)["fields"]["a"]["source"] == "dashboard"
+
+    def test_the_render_hands_out_a_history_a_reader_cannot_edit(self) -> None:
+        """The state stays in the warm cell while the rendered value is returned, so a
+        shared list is one a caller can append to -- and the next step would then trim
+        that edit as though the fold had stored it."""
+        state = projection._custom_start()
+        for item in self.writes("a", 1, 2):
+            projection._custom_step(state, item)
+        read = projection._custom_render(state)
+        read["fields"]["a"]["history"].append({"value": "planted"})
+        read["fields"]["a"]["history"][0]["value"] = "edited"
+        again = projection._custom_render(state)
+        assert [past["value"] for past in again["fields"]["a"]["history"]] == [1]
+
+    def test_each_retained_past_value_is_charged_a_row_of_its_own(self) -> None:
+        """``count_rows`` walks INTO each key. A counter that stopped at the key set
+        would charge 64 keys holding six values each as 64 rows, a sixth of what the
+        cell retains -- and the warm-cell budget would admit six times its ceiling."""
+        state = projection._custom_start()
+        for item in self.writes("a", 1):
+            projection._custom_step(state, item)
+        flat = projection._custom_rows(state)
+        for item in self.writes("a", 2, 3, 4):
+            projection._custom_step(state, item)
+        deep = projection._custom_rows(state)
+        assert flat == 1
+        assert deep == 1 + len(state["fields"]["a"]["history"]) == 4
+        assert projection.slot_fold_cell_bytes(
+            entry_types.DASHBOARD_FOLD_NAME, state
+        ) > projection.slot_fold_cell_bytes(
+            entry_types.DASHBOARD_FOLD_NAME, projection._custom_start()
+        )
+
+    def test_a_history_longer_than_the_limit_is_trimmed_not_left_one_over(self) -> None:
+        """A resumed savepoint can carry a longer list than the limit now admits -- a
+        build that retained more, or a limit since lowered. Popping once would leave
+        it permanently one over its own bound."""
+        state = projection._custom_start()
+        for item in self.writes("a", 0):
+            projection._custom_step(state, item)
+        limit = entry_types.DASHBOARD_HISTORY_LIMIT
+        state["fields"]["a"]["history"] = [
+            {
+                "value": -n,
+                "type": "number",
+                "at": "",
+                "instance_version": 0,
+                "crew_key": "",
+                "source": "",
+            }
+            for n in range(limit + 6)
+        ]
+        projection._custom_step(
+            state, entry(AGENTIC, {"field": "a", "type": "number", "value": {"v": 99}}, 2)
+        )
+        assert len(state["fields"]["a"]["history"]) == limit
 
 
 class TestTheMistakeBookFold:
@@ -987,6 +1143,236 @@ class TestTheInstanceSeam:
         talked into reporting it, and the state is the frame's branch."""
         fields = set(dashboard_agentic.Instance.__dataclass_fields__)
         assert fields == {"manifest", "instance_version"}
+
+
+class TestThePackageSeam:
+    """``dashboard_write``'s Model comes from the current PACKAGE, through one function.
+
+    ``read_package_model`` is the whole seam to the package line: when the
+    ``kind="dashboard"`` artifact lands, only its body changes. These cases pin what
+    every caller depends on and the body does not get to move -- the four states, the
+    refusal each maps to, and that a content problem is a state while only a failed
+    read raises.
+    """
+
+    def store(self, monkeypatch: pytest.MonkeyPatch, **over: Any) -> None:
+        """Stand the template instance store in, the way the seam cases above do."""
+        base = {
+            "slug": "atlas",
+            "instance_version": 4,
+            "state": "live",
+            "state_reason": "copied from 'demo' version 2",
+            "manifest": dict(MANIFEST_RAW),
+        }
+        base.update(over)
+        record = SimpleNamespace(**base)
+
+        class _Err(Exception):
+            pass
+
+        fake = SimpleNamespace(
+            read=lambda slug: record,
+            default_instance=lambda slug: None,
+            InstanceError=_Err,
+            STATE_LIVE="live",
+            STATE_STALE="stale",
+            STATE_EMPTY="empty",
+            STATE_ERROR="error",
+        )
+        monkeypatch.setitem(sys.modules, "kiro_crew.dashboard_templates.instance", fake)
+        import kiro_crew.dashboard_templates as _templates_pkg
+
+        monkeypatch.setattr(_templates_pkg, "instance", fake, raising=False)
+
+    def read(self) -> Any:
+        from kiro_crew import dashboard_package
+
+        return dashboard_package.read_package_model("atlas", "atlas")
+
+    def test_a_live_package_hands_back_a_model_a_write_can_be_checked_against(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_LIVE
+        assert got.model is not None
+        assert set(got.model.manifest.fields) == set(MANIFEST_RAW["fields"])
+        # The PACKAGE's version, which is the number each written entry is stamped
+        # with -- not the template version beside it.
+        assert got.model.instance_version == 4
+
+    def test_a_write_that_satisfies_the_packages_model_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end through the seam: the Model the reader returned is the Model the
+        value is checked against, and the accepted entry carries that Model's own
+        declared type and version rather than anything the caller said."""
+        self.store(monkeypatch)
+        got = self.read()
+        assert dashboard_agentic.package_refusal(got.state, got.state_reason, "open_items") is None
+        written = dashboard_agentic.check_write(got.model, "open_items", 12)
+        assert written["field"] == "open_items"
+        assert written["type"] == "number"
+        assert written["value"] == {"v": 12}
+        assert written["instance_version"] == 4
+
+    def test_a_write_that_violates_the_packages_model_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two ways to violate it, and both are refused by the Model rather than by a
+        builtin manifest: a field the Model does not declare, and a value of the wrong
+        declared type for a field it does."""
+        self.store(monkeypatch)
+        model = self.read().model
+        with pytest.raises(dashboard_agentic.WriteRefused) as unknown:
+            dashboard_agentic.check_write(model, "credits_total", 1)
+        assert unknown.value.code == "unknown_field"
+        # The refusal names the Model's own writable fields, so it cannot advise a
+        # field the package does not have.
+        assert "open_items" in str(unknown.value)
+        with pytest.raises(dashboard_agentic.WriteRefused) as wrong:
+            dashboard_agentic.check_write(model, "open_items", "twelve")
+        assert wrong.value.code == "wrong_type"
+
+    def test_a_value_over_the_size_cap_is_refused_by_the_package_write_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SAME cap as before the move off templates. One field's value has no
+        natural width once its declared type is ``array`` or ``object``, so without
+        this one field could fill the log line and take the others down with it."""
+        self.store(
+            monkeypatch,
+            manifest={
+                **MANIFEST_RAW,
+                "fields": {"risk_note": {"type": "string", "source": {"agentic": True}}},
+            },
+        )
+        model = self.read().model
+        over = "x" * (entry_types.DASHBOARD_VALUE_BYTES + 1)
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(model, "risk_note", over)
+        assert refused.value.code == "value_too_large"
+        assert str(entry_types.DASHBOARD_VALUE_BYTES) in str(refused.value)
+
+    def test_what_lands_through_the_package_path_is_redacted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An agentic value is drawn on a page as the agent wrote it, so a credential
+        in one would be displayed verbatim. The scrub runs on the way in, and it walks
+        into a nested value rather than only a top-level string."""
+        self.store(
+            monkeypatch,
+            manifest={
+                **MANIFEST_RAW,
+                "fields": {"rows": {"type": "array", "source": {"agentic": True}}},
+            },
+        )
+        model = self.read().model
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        written = dashboard_agentic.check_write(model, "rows", [{"key": secret}])
+        landed = json.dumps(written["value"])
+        assert secret not in landed, "a credential reached the stored value unscrubbed"
+
+    @pytest.mark.parametrize(
+        ("state", "code"),
+        [
+            ("empty", "no_instance"),
+            ("error", "package_model_invalid"),
+            ("forbidden", "package_not_yours"),
+        ],
+    )
+    def test_each_non_live_state_refuses_with_its_own_code_and_a_remedy(
+        self, state: str, code: str
+    ) -> None:
+        """Three states, three different instructions. Folding them into one would tell
+        an agent reaching another member's package to create one, which is the wrong
+        action on every cycle forever."""
+        refused = dashboard_agentic.package_refusal(state, "because reasons", "open_items")
+        assert refused is not None
+        assert refused.code == code
+        assert refused.field == "open_items"
+        # The reader's own sentence AND a remedy, because an agent handed only what the
+        # reader found retries the same write forever.
+        assert "because reasons" in str(refused)
+        assert len(str(refused)) > len("because reasons")
+
+    def test_every_state_the_reader_can_answer_with_has_a_refusal_beside_it(self) -> None:
+        """The two halves live in different modules on purpose -- the Model type travels
+        one way, so a type import back would close a cycle -- and the vocabulary is
+        therefore shared as strings. This is the pin that stops them drifting: a state
+        added with no row would reach an agent as a bare "no package"."""
+        from kiro_crew import dashboard_package
+
+        non_live = set(dashboard_package.PACKAGE_STATES) - {dashboard_package.STATE_LIVE}
+        assert non_live == set(dashboard_agentic.PACKAGE_REFUSALS)
+        assert dashboard_package.STATE_LIVE not in dashboard_agentic.PACKAGE_REFUSALS
+
+    def test_an_unrecognised_state_refuses_rather_than_being_read_as_live(self) -> None:
+        """Reporting it live would check the write against a ``None`` Model; reporting
+        it as "no package" would tell the agent to create one it may already have."""
+        refused = dashboard_agentic.package_refusal("something-new", "", "open_items")
+        assert refused is not None and refused.code == "package_unreadable"
+
+    def test_a_model_that_does_not_parse_is_a_state_and_not_a_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every refusal is recorded to the mistake book BEFORE the response, which is
+        the only reason the next cycle is cheaper. A raise would escape that recording
+        and become a 500: the agent learns nothing."""
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, manifest={"id": "", "fields": {}})
+        got = self.read()
+        assert got.state == dashboard_package.STATE_ERROR
+        assert got.model is None
+        assert got.state_reason
+
+    def test_a_store_read_that_fails_raises_because_it_is_not_about_content(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The one thing that is not a state: nothing is known about the Model either
+        way, so there is no lesson to record and no field to blame."""
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch)
+        import kiro_crew.dashboard_templates as _templates_pkg
+
+        fake = _templates_pkg.instance
+
+        def _boom(slug: str) -> Any:
+            raise fake.InstanceError("record unreadable")
+
+        monkeypatch.setattr(fake, "read", _boom)
+        with pytest.raises(dashboard_package.PackageReadError):
+            self.read()
+
+    def test_no_package_and_no_default_answers_empty_rather_than_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, state="empty")
+        got = self.read()
+        assert got.state == dashboard_package.STATE_EMPTY
+        assert got.model is None
+
+    def test_a_stale_copy_still_yields_a_model_because_its_own_fields_parse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``stale`` is not one of this reader's states: a package has no registry
+        behind it to move past. The stub maps it to ``live`` because the stored copy is
+        complete and is the one the page is drawn from, so refusing would stop a
+        crewmate writing its own fields for a reason unrelated to the write."""
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, state="stale")
+        got = self.read()
+        assert got.state == dashboard_package.STATE_LIVE
+        assert got.model is not None
+        assert dashboard_package.STATE_LIVE in dashboard_package.PACKAGE_STATES
+        assert "stale" not in dashboard_package.PACKAGE_STATES
 
 
 def test_a_written_value_reaches_a_page_that_declares_an_agentic_array():
