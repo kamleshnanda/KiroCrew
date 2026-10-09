@@ -8,6 +8,7 @@ import { Btn } from "../../components/ui";
 import ErrorNotice from "../../components/ErrorNotice";
 import { useTheme } from "../../hooks/useTheme";
 import { useSandboxDoc } from "../../hooks/useSandboxDoc";
+import { useFrameOpenLink } from "../../hooks/useFrameOpenLink";
 import { buildSrcdoc, readThemeVars } from "../../lib/widgetSrcdoc";
 import { i18nT } from "../../i18n/t";
 import { fmtDateTime, fmtRelative, toDate } from "../../i18n/format";
@@ -337,6 +338,10 @@ function CrewWebviewView({ slug, member, onSetUp, onLiveFrameChange }: CrewWebvi
    *    bug this flag exists to make impossible, not merely to avoid.
    */
   const [everExpanded, setEverExpanded] = useState(false);
+  // A pull request the panel links to: these two frames only, GitHub PR URLs only.
+  const dockedFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const expandedFrameRef = useRef<HTMLIFrameElement | null>(null);
+  useFrameOpenLink([dockedFrameRef, expandedFrameRef]);
 
   /* Keyed on a ref so a consumer passing an inline arrow does not re-run this on
      every render and report the same value repeatedly. */
@@ -753,6 +758,7 @@ function CrewWebviewView({ slug, member, onSetUp, onLiveFrameChange }: CrewWebvi
             >
               {docked.url ? (
                 <iframe
+                  ref={dockedFrameRef}
                   src={docked.url}
                   sandbox={CREW_WEBVIEW_SANDBOX}
                   className="w-full h-full border-none bg-card"
@@ -973,6 +979,7 @@ function CrewWebviewView({ slug, member, onSetUp, onLiveFrameChange }: CrewWebvi
           <div className="border border-border border-t-0 rounded-b-lg overflow-hidden bg-card flex-1 min-h-0">
             {url ? (
               <iframe
+                ref={expandedFrameRef}
                 src={url}
                 sandbox={CREW_WEBVIEW_SANDBOX}
                 className="w-full h-full border-none bg-card"
@@ -1025,6 +1032,9 @@ export function CrewDashboardFrame(props: CrewWebviewProps) {
 }
 
 function CrewDashboardFrameView({ slug, member, displayName }: CrewWebviewProps) {
+  // A pull request the panel links to: this frame only, GitHub PR URLs only.
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  useFrameOpenLink([frameRef]);
   const { theme, colorTheme, themeVersion } = useTheme();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion]);
@@ -1102,6 +1112,7 @@ function CrewDashboardFrameView({ slug, member, displayName }: CrewWebviewProps)
       )}
       {url ? (
         <iframe
+          ref={frameRef}
           src={url}
           sandbox={CREW_WEBVIEW_SANDBOX}
           className="flex-1 min-h-0 w-full border-none bg-bg"
