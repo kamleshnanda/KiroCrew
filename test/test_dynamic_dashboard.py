@@ -1329,6 +1329,25 @@ class TestThePackageSeam:
         assert got.model is None
         assert got.state_reason
 
+    @pytest.mark.parametrize("stored", ["error", "something-this-reader-never-heard-of"])
+    def test_a_package_the_store_cannot_interpret_is_error_and_not_empty(
+        self, monkeypatch: pytest.MonkeyPatch, stored: str
+    ) -> None:
+        """Both are a package that IS there and cannot be read as a Model.
+
+        Answering ``empty`` for either would tell the agent to create a package it
+        already has, which is the wrong instruction on every cycle forever -- and the
+        unrecognised state matters as much as the named one, because it is what a
+        store shipping a fifth state looks like to this reader.
+        """
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, state=stored)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_ERROR
+        assert got.model is None
+        assert got.state_reason, "a non-live state with no sentence leaves nothing to show"
+
     def test_a_store_read_that_fails_raises_because_it_is_not_about_content(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
