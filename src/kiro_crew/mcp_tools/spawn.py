@@ -685,6 +685,46 @@ def _is_unknown_agent_refusal(resp: Mapping[str, Any], agent: str) -> bool:
     )
 
 
+#: What a caller is told about a sub-agent whose spec declares ``"tools": []``.
+#: Such an agent (``kirocrew-lite``, ``kirocrew-knowledge``, a user's own
+#: reasoning-only spec) has no way to write a file, run a command or make a
+#: commit, yet it still answers a task that asks for one -- typically by
+#: narrating the steps as though it had taken them. The dispatch is not refused,
+#: because whether a task needs writes is not decidable from its prose and these
+#: agents are the right choice for pure reasoning; the caller is told instead, at
+#: dispatch and beside the result, so it does not report narrated work as done.
+NO_TOOLS_AGENT_NOTE = (
+    "declares no tools, so it cannot write files, run commands or make commits. "
+    "Any file change, command output or commit it reports is narration, not work "
+    "on disk: do that work yourself or give it to an agent that has write tools."
+)
+
+
+def _declares_no_tools(agent: str, cwd: str = "") -> bool:
+    """True when the spec *agent* resolves to declares an empty ``tools`` list.
+
+    Reads the spec the session projection reads (:func:`agent_spec_snapshot`,
+    project checkout first when *cwd* is given), so the answer matches the tool
+    surface the child is started with. An empty *agent* is the host default,
+    which carries tools. Fails quiet: an unreadable spec, a missing or non-list
+    ``tools``, or any read error answers False, so the note is never attached on
+    a guess.
+    """
+    if not agent:
+        return False
+    try:
+        from kiro_crew.acp.session_mcp import agent_spec_snapshot
+
+        spec = agent_spec_snapshot(agent, work_dir=cwd or None)
+    except Exception:
+        logger.debug("spec for %r unreadable; no tool-capability note", agent, exc_info=True)
+        return False
+    if not isinstance(spec, dict):
+        return False
+    tools = spec.get("tools")
+    return isinstance(tools, list) and not tools
+
+
 def _collapse_effort_verdicts(
     pairs: list[tuple[str, tuple[str, str]]],
 ) -> list[tuple[str, tuple[str, str]]]:
@@ -983,6 +1023,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
                 label = f"{aid} ({a})" if a else aid
                 note = "" if queued_reasons[aid] == head_reason else f" [{queued_reasons[aid]}]"
                 spawn_lines.append(f"  {label}: {t[:80]}{note}")
+        no_tools = [a for a in dict.fromkeys(agent_names) if _declares_no_tools(a, cwd)]
+        for a in no_tools:
+            spawn_lines.append(f"⚠ Agent {redact(a)!r} {NO_TOOLS_AGENT_NOTE}")
         if keep:
             spawn_lines.append(
                 "These conversations have GUARANTEED continuability: after "
@@ -1619,15 +1662,14 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             completed += 1
             _settled_ids.add(aid)
             result_text = _inline_result(aid, sa_st.get("result", ""))
-            sa_results.append(
-                json.dumps(
-                    {
-                        "agent": label,
-                        "status": "completed",
-                        "text": result_text,
-                    }
-                )
-            )
+            record: dict[str, Any] = {
+                "agent": label,
+                "status": "completed",
+                "text": result_text,
+            }
+            if _declares_no_tools(str(sa_st.get("agent") or ""), cwd):
+                record["unverified"] = f"This agent {NO_TOOLS_AGENT_NOTE}"
+            sa_results.append(json.dumps(record))
     if _unsettled:
         sa_results.append(
             json.dumps(
