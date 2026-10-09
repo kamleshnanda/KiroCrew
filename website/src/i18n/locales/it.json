@@ -12078,7 +12078,9 @@
       "archived_count_many": "{{count}} archiviate",
       "archived_count_one": "{{count}} archiviata",
       "archived_count_other": "{{count}} archiviate",
-      "waiting_for_memory": "In attesa di RAM libera"
+      "waiting_for_memory": "In attesa di RAM libera",
+      "chat_with_session": "Chat con {{title}}",
+      "chat_with_session_desc": "La sessione che ha avviato le altre chat di questa cartella"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

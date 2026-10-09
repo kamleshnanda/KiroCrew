@@ -11704,7 +11704,9 @@
       "deleting_folders": "削除中…",
       "archived_sessions_kept_other": "アーカイブ済みのセッション {{count}} 件は「以前のセッション」に残ります",
       "archived_count_other": "アーカイブ済み {{count}} 件",
-      "waiting_for_memory": "空きRAM待ち"
+      "waiting_for_memory": "空きRAM待ち",
+      "chat_with_session": "{{title}} とチャット",
+      "chat_with_session_desc": "このフォルダーの他のチャットを開始したセッション"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

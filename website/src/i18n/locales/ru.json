@@ -12265,7 +12265,9 @@
       "archived_count_many": "{{count}} в архиве",
       "archived_count_one": "{{count}} в архиве",
       "archived_count_other": "{{count}} в архиве",
-      "waiting_for_memory": "Ожидание свободной RAM"
+      "waiting_for_memory": "Ожидание свободной RAM",
+      "chat_with_session": "Чат с {{title}}",
+      "chat_with_session_desc": "Сессия, которая начала остальные чаты в этой папке"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
