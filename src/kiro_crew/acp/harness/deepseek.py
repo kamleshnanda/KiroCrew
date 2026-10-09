@@ -499,6 +499,7 @@ def _verify_deepseek_gate(
     # The session's own credential repair and PATH augmentation, owned by the client
     # and read there at call time, so the read-back's environment is built by the
     # same bindings as the spawn's.
+    from kiro_crew.acp.agent_env import agent_env_overlay
     from kiro_crew.acp.client import _resolve_spawn_env, augmented_path
 
     with suppress(OSError):
@@ -511,7 +512,9 @@ def _verify_deepseek_gate(
     # session's ``DSH_HOME``, so a probe reading the ambient one would compose a
     # different profile from the child it speaks for.
     env = scrub_agent_subprocess_env(
-        _resolve_spawn_env({**os.environ, **session._extra_env}, kiro_api_key=False)
+        _resolve_spawn_env(
+            {**os.environ, **agent_env_overlay(), **session._extra_env}, kiro_api_key=False
+        )
     )
     env["PATH"] = augmented_path(env.get("PATH", ""))
     env[_ENV_DSH_GATE_MARKER] = marker_path

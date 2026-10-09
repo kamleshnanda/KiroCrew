@@ -558,6 +558,7 @@ def _verify_pi_gate(
     # The session's own credential repair and PATH augmentation, owned by the client
     # and read there at call time, so the read-back's environment is built by the
     # same bindings as the spawn's.
+    from kiro_crew.acp.agent_env import agent_env_overlay
     from kiro_crew.acp.client import _resolve_spawn_env, augmented_path
 
     # The SAME environment the spawn builds, scrubbed the same way and for the same
@@ -566,7 +567,9 @@ def _verify_pi_gate(
     # and the gateway's own secrets must not reach a foreign binary a few lines
     # ahead of the code that strips them.
     env = scrub_agent_subprocess_env(
-        _resolve_spawn_env({**os.environ, **session._extra_env}, kiro_api_key=False)
+        _resolve_spawn_env(
+            {**os.environ, **agent_env_overlay(), **session._extra_env}, kiro_api_key=False
+        )
     )
     env["PATH"] = augmented_path(env.get("PATH", ""))
     # Offline for the read-back only: pi's startup network work (update checks,

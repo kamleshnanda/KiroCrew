@@ -826,6 +826,8 @@ class LaunchTools:
     bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
     retrying_spawn_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None
+    #: ``agent.env`` (``acp.agent_env.agent_env_overlay``); blocking, run off-loop.
+    agent_env_overlay: Callable[[], dict[str, str]] = field(default=dict)
 
 
 def _unscoped(argv: list[str]) -> tuple[list[str], str]:
@@ -987,6 +989,12 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     argv, scope_unit = request.scope_argv(argv)
 
     env = {**os.environ}
+    # ``agent.env``: the operator's variables for everything the agent runs, over
+    # the inherited gateway environment and under everything below -- the
+    # driver's ``extra_env``, its session identity and credential repair, and the
+    # scrub, which still removes any denied name. Off-loop (reads config);
+    # guarded because the sandbox launcher above is live.
+    env.update(await host._to_thread_guarding_sandbox(tools.agent_env_overlay))
     if request.extra_env:
         env.update(request.extra_env)
     env["PATH"] = tools.augmented_path(env.get("PATH", ""))

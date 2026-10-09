@@ -98,6 +98,7 @@ from kiro_crew.acp._dispatch import (
     tool_call_content_text,
 )
 from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness import pi as pi_mod
@@ -1825,6 +1826,7 @@ def _launch_tools() -> LaunchTools:
         inject_xdist_auto_cap=inject_xdist_auto_cap,
         bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
         create_subprocess_limited=create_subprocess_limited,
+        agent_env_overlay=agent_env_overlay,
     )
 
 
