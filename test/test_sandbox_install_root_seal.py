@@ -251,7 +251,9 @@ _UPDATER_MODULES = (
     "platform/wheel_engine.py",
     "platform/update_provider.py",
     "platform/update_layout.py",
+    "platform/wheel_apply.py",
     "dep_sync.py",
+    "frontend.py",
 )
 
 
