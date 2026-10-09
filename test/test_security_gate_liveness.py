@@ -208,7 +208,16 @@ def _url_payload_command(n: int) -> str:
 #: window crossing that commit's opening ``/`` with twelve of its digits, one clause
 #: beside the separator ceiling, and the docstring naming them. No pass widened and
 #: no existing threshold moved.
-_PACKAGE_LINE_BUDGET = 28_631
+#:
+#: Raised again, from 28,631, for the quote-aware re-derivation of the mint-verb
+#: and self-kill-by-name argv windows: a ``_blank_substitution_spans`` helper
+#: blanks each top-level command-substitution span to a word boundary so a quoted
+#: ``)`` in a decoy stays inside the span rather than ending the window early, and
+#: each floor re-runs its own scan over that copy, and over each nested shell
+#: payload, recognising process-substitution openers too, and only a STANDALONE
+#: span is blanked so a glued span is not invented into a hit. No target,
+#: matching rule or threshold moved.
+_PACKAGE_LINE_BUDGET = 28_740
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
