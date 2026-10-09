@@ -1099,9 +1099,14 @@ def install_root_targets_for(package_dir: str) -> list[str]:
     Lexical only, so it never stats; :func:`_resolved_install_root_targets` adds the
     canonical spelling.
     """
-    normalized = os.path.normpath(os.path.abspath(package_dir))
-    parent = os.path.basename(os.path.dirname(normalized))
-    if os.path.normcase(parent) in _PACKAGED_INSTALL_DIR_NAMES:
+    return _install_root_targets_with(package_dir, os.path)
+
+
+def _install_root_targets_with(package_dir: str, paths: ModuleType) -> list[str]:
+    """:func:`install_root_targets_for` against one platform's path module."""
+    normalized = paths.normpath(paths.abspath(package_dir))
+    parent = paths.basename(paths.dirname(normalized))
+    if paths.normcase(parent) in _PACKAGED_INSTALL_DIR_NAMES:
         return [normalized]
     return []
 

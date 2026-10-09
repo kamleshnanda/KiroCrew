@@ -107,23 +107,10 @@ def test_this_source_checkout_is_not_sealed() -> None:
         (r"C:\Users\u\src\KiroCrew\src\kiro_crew", False),
     ],
 )
-def test_windows_layouts_are_classified(
-    monkeypatch: pytest.MonkeyPatch, package_dir: str, sealed: bool
-) -> None:
+def test_windows_layouts_are_classified(package_dir: str, sealed: bool) -> None:
     import ntpath
 
-    monkeypatch.setattr(sandbox, "os", _OsWithPath(ntpath))
-    assert bool(sandbox.install_root_targets_for(package_dir)) is sealed
-
-
-class _OsWithPath:
-    """``os`` with its ``path`` module swapped, for classifying another platform's paths."""
-
-    def __init__(self, path_module: object) -> None:
-        self.path = path_module
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(os, name)
+    assert bool(sandbox._install_root_targets_with(package_dir, ntpath)) is sealed
 
 
 @_POSIX_ONLY
