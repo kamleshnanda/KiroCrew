@@ -596,6 +596,19 @@ def _needs_private_backend(withheld: int, entry_env: Mapping[str, Any]) -> bool:
     return bool(withheld) and bool(secret_reference_keys(entry_env))
 
 
+def _must_stay_wrapped(entry_env: Mapping[str, Any]) -> bool:
+    """True when a routed server must be wrapped even if it cannot be served yet.
+
+    Only a stub keeps a session from launching the agent spec's own entry, and
+    that entry starts the server with the literal ``secret://`` text. So a routed
+    server whose env names a vault secret is wrapped even when its command does
+    not resolve on the gateway search path or its launch is not approved: the
+    gateway then refuses it (no approved target, or a failed spawn whose stub
+    fallback refuses the reference), and the server does not start.
+    """
+    return bool(secret_reference_keys(entry_env))
+
+
 def _withheld_env_count(
     entry_env: dict[str, Any],
     forward_env: bool,
@@ -810,7 +823,8 @@ def _build_stub_entry(
     the stub entirely when the command is unresolvable or (for a poolable
     entry) any declared key would be withheld from the shared backend. This
     function therefore never emits a stub whose pooled spawn is a guaranteed
-    ENOENT or whose declared env is silently dropped.
+    ENOENT or whose declared env is silently dropped. The one exception is a
+    server :func:`_must_stay_wrapped` keeps wrapped, which must fail to start.
 
     Preserves ``autoApprove`` on the wrapped entry so kiro-cli still honours
     it at the UI layer. ``env`` is cleared on the wrapper — the stub passes
@@ -1130,6 +1144,7 @@ def _rewrite_single_spec(
     # would otherwise spawn a duplicate backend (e.g. a slash-named server and
     # its slash-free alias both pointing at the same proxy command).
     seen_targets: set[tuple[str, tuple[str, ...]]] = set()
+    stub_aliases = frozenset(mcp_server_alias(s) for s in stub_servers)
     wrapped = 0
     for name, entry in servers.items():
         if not isinstance(entry, dict):
@@ -1200,7 +1215,13 @@ def _rewrite_single_spec(
         # call sites, uncached). Honouring it only in this function produced a
         # stub nothing pointed at, and a dashboard row that read "stub" for a
         # server that had none. One source of truth instead.
-        if name not in stub_servers:
+        if name not in stub_servers and not (
+            name in stub_aliases and secret_reference_keys(entry.get("env"))
+        ):
+            # A spec key is the slash-free alias, while the routing list may hold
+            # the raw name. A server carrying a vault reference is routed under
+            # either form, because the agent-spec rebuild let it through on
+            # that same test; every other server keeps the exact-name rule.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         # A reserved kirocrew-* name launches the managed invocation, whatever
@@ -1214,6 +1235,18 @@ def _rewrite_single_spec(
         resolved_cmd = _resolve_target_command(
             str(entry.get("command", "")), entry_env, notes
         )
+        # See :func:`_must_stay_wrapped`: such a server is wrapped even when the
+        # checks below would leave it unwrapped, so it fails closed instead.
+        stay_wrapped = _must_stay_wrapped(entry_env)
+        if not resolved_cmd and stay_wrapped:
+            logger.warning(
+                "rewriter: cannot resolve MCP command %r for opted-in server "
+                "%r (agent %r) on the gateway search path, and its env holds a "
+                "secret:// reference; wrapping it anyway so it fails to start "
+                "rather than start with the reference unresolved.",
+                entry.get("command", ""), name, agent_name,
+            )
+            resolved_cmd = str(entry.get("command", ""))
         if not resolved_cmd:
             # An unresolvable bare command means gatewayd's spawn is a
             # guaranteed ENOENT (it runs under the systemd --user PATH), and
@@ -1264,16 +1297,22 @@ def _rewrite_single_spec(
             )
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        if not _admit_launch(
-            approvals,
-            name=name,
-            agent_name=agent_name,
-            entry=entry,
-            resolved_cmd=resolved_cmd,
-            entry_env=entry_env,
+        if (
+            not _admit_launch(
+                approvals,
+                name=name,
+                agent_name=agent_name,
+                entry=entry,
+                resolved_cmd=resolved_cmd,
+                entry_env=entry_env,
+            )
+            and not stay_wrapped
         ):
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
+        # A refused launch that stays wrapped is still never exec'd by the
+        # gateway: ``filter_target_env`` drops its target, so the stub is refused.
+        private = private or stay_wrapped
         new_servers[name] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=name,
@@ -1364,6 +1403,10 @@ def _rewrite_single_spec(
         resolved_cmd = _resolve_target_command(
             str(entry.get("command", "")), entry_env, notes
         )
+        inject_stay_wrapped = _must_stay_wrapped(entry_env)
+        if not resolved_cmd and inject_stay_wrapped:
+            # Wrapped anyway, for the reason in :func:`_must_stay_wrapped`.
+            resolved_cmd = str(entry.get("command", ""))
         if not resolved_cmd:
             # Membership in ``inject`` was vetted by
             # _injectable_settings_servers (same resolver, same pass), so this
@@ -1384,20 +1427,26 @@ def _rewrite_single_spec(
             new_servers[alias] = {k: v for k, v in entry.items() if k != "poolable"}
             seen_targets.add(inject_sig)
             continue
-        if not _admit_launch(
-            approvals,
-            name=alias,
-            agent_name=agent_name,
-            entry=entry,
-            resolved_cmd=resolved_cmd,
-            entry_env=entry_env,
+        if (
+            not _admit_launch(
+                approvals,
+                name=alias,
+                agent_name=agent_name,
+                entry=entry,
+                resolved_cmd=resolved_cmd,
+                entry_env=entry_env,
+            )
+            and not inject_stay_wrapped
         ):
             # Not injected at all: kiro-cli's own merge of the real settings
             # file still gives the session this server, launched in-sandbox.
             continue
         # The vetting pass let a withheld-env server through only for this reason.
-        inject_private = pooling_enabled and _needs_private_backend(
-            _withheld_env_count(entry_env, forward_env, identity_keys), entry_env
+        inject_private = inject_stay_wrapped or (
+            pooling_enabled
+            and _needs_private_backend(
+                _withheld_env_count(entry_env, forward_env, identity_keys), entry_env
+            )
         )
         new_servers[alias] = _build_stub_entry(
             stubs_dir=stubs_dir,
@@ -1491,7 +1540,9 @@ def _injectable_settings_servers(
         # projection already repairs both).
         entry = _repair_control_plane_entry(name, entry, "settings/mcp.json")
         entry_env = _normalized_env(entry, context=f"settings server {name!r}")
-        if not _resolve_target_command(str(entry.get("command", "")), entry_env, notes):
+        if not _resolve_target_command(
+            str(entry.get("command", "")), entry_env, notes
+        ) and not _must_stay_wrapped(entry_env):
             # Settings edition of the unresolvable-command guard: an
             # unresolvable bare command must not be pooled into a stub whose
             # spawn is a guaranteed ENOENT. Leaving it out of the injection

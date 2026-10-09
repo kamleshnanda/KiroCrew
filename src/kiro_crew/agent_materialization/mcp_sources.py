@@ -463,7 +463,11 @@ def _gateway_routed_names() -> frozenset[str]:
         # Deferred: the config loader is heavy and only a server that carries a
         # ``secret://`` reference needs it, so most rebuilds never import it here.
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.mcp_gateway import is_gateway_supported
 
+        if not is_gateway_supported():
+            # No gateway runs here, so nothing listed is ever served by one.
+            return frozenset()
         return frozenset(KiroCrewConfig.load().mcp_gateway.stub_servers)
     except Exception:  # noqa: BLE001 -- any failure means "cannot prove routed"
         agent_mod.logger.warning(
@@ -749,20 +753,14 @@ def resolve_mcp_servers(
                 chosen = cand
                 break
 
-        if resolved and _unrouted_secret_reference(name, chosen, _routed, _app_owned):
-            if _scope_owned:
-                # A command resolved, but the session would launch this server with
-                # a ``secret://`` value it cannot resolve. The scope file still holds
-                # the declaration, so the server is withheld exactly like an
-                # unresolved command: the refs stay, and the pass after the server
-                # is routed through the gateway emits it again.
-                _unresolved_this_pass.add(name)
-                continue
-            # This file is the only copy of an agent-only declaration, so it is kept
-            # and muted in place rather than dropped; see _mute_withheld.
-            _mute_here = True
-        else:
-            _mute_here = False
+        # Kept and muted in place rather than dropped, whichever file declares
+        # it: the entry this rebuild writes carries the user's spec-only fields
+        # (``disabledTools``, ``autoApprove``), and an agent-only declaration has
+        # no other copy. The mute lifts on the first pass after the server is
+        # routed; see _mute_withheld.
+        _mute_here = bool(resolved) and _unrouted_secret_reference(
+            name, chosen, _routed, _app_owned
+        )
         if resolved:
             # Start from the merged winner so user-set NON-command fields
             # (autoApprove, disabled, ...) are preserved.  When we fall back to
@@ -1002,7 +1000,9 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
                 ),
             )
         )
-        if muted_here or alias in _disabled_mounted_aliases:
+        rendered_entry = valid_servers.get(alias)
+        withheld_here = isinstance(rendered_entry, dict) and WITHHELD_KEY in rendered_entry
+        if muted_here or withheld_here or alias in _disabled_mounted_aliases:
             # The rendered entry says ``true`` whenever the server is muted --
             # over a merged ``false`` from a higher-priority scope as much as over
             # a raw ``null``/``0``/``"false"``. The file kiro-cli parses must
