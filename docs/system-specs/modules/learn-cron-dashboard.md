@@ -5523,7 +5523,9 @@ is still progressing; the MCP renderer makes this visible rather than claiming a
 
 ### Registered-action guides
 
-Guide-marked HTML is
+Owner mutations intercepted for change-card history reject an incomplete, oversized or
+invalid JSON capture before calling the underlying route; a consumed prefix is never
+forwarded as if its remaining suffix were the complete request. Guide-marked HTML is
 parsed in an inert document and has reserved attributes removed without HTML assignment.
 Markdown-link detection scans delimiters linearly, including repeated unmatched brackets.
 
@@ -5550,7 +5552,7 @@ the older offer's row settles to its result line.
 Cancellation does not undo an already-submitted save. A guide's offer is a
 row of its chat's conversation at the point it was offered (a `card` transcript row,
 `history.md` "Card rows"), so an ended guide keeps its result line there across a
-reload: `pending` serves each slot's newest ended guide
+reload the way a change card does: `pending` serves each slot's newest ended guide
 for 24 hours (unless a newer guide is in progress, the slot was closed, or the owner
 dismissed it), the row itself records the final status for after that, and ended
 guides are pruned after seven days, within the store's fixed cap. When a cancelled or
@@ -5571,7 +5573,8 @@ bidirectional override/isolate, a link (`http(s)://`, `www.`), markup (`<`,
 `>`, a backtick, `[text](target)`), and any text the output redactors would
 change (`guide_catalog.needs_redaction`: the exfiltration-URL scrubber, then the
 credential redactor through the platform context) -- the text is shown as
-written, so a credential is refused (`invalid_text`), never stored redacted. The stored text rides on the guide record
+written, so a credential is refused (`invalid_text`), never stored redacted; a
+change card's `reason` follows the same rule. The stored text rides on the guide record
 (`intro`, `actions[i].note`) and is not written to the guide's transcript row or
 the crew log, which keep only action ids. The browser draws it only in the guide
 offer card (the intro, under the title) and the guide panel (the intro on the
