@@ -71,7 +71,7 @@ _BASE_NAMES = frozenset("""
         TEMPLATE_DEFINITION_KEYS TEMPLATE_NAME_RE UnknownMemoryStore
         _AVATAR_CONTENT_TYPES _AVATAR_FILE_PIN_RE _AVATAR_GHOST_BOOL_TRAITS
         _AVATAR_GHOST_STR_TRAITS _AVATAR_IMAGE_EXTS _AVATAR_MAX_BYTES
-        _AmbiguousDefaultTarget _AmbiguousTemplateName _AppRegisteredTemplate
+        _AmbiguousTemplateName _AppRegisteredTemplate
         _BLOCKED_SLASH_COMMANDS _CAPABILITY_UNAVAILABLE
         _CATALOG_CACHE_MAX_FIELDS_PER_ROW _CONFIG_SCHEMA_ACP_BACKEND _CatalogCache
         _CatalogUnavailable _ForeignPrivateCopy _ForkBookkeepingFailed
@@ -81,10 +81,10 @@ _BASE_NAMES = frozenset("""
         _SLASH_COMMANDS _StaleBinding _UnverifiableLineage
         _VALID_CAPABILITY_PACKAGE_RE _WINDOWS_RESERVED_NAMES
         _advertised_backend_models _advertised_cc_models _agent_detail_candidates
-        _agent_file_lock _agent_roster_row _alias_binding_template
+        _agent_file_lock _agent_roster_row
         _app_declared_server_names _app_or_host_owned _atomic_json_write
         _audit_capability _avatar_stem _avatar_variant_paths _avatars_dir
-        _binds_template _bounded_catalog _capability_manager _carries_mask
+        _bounded_catalog _capability_manager _carries_mask
         _carry_motions_through_motionless_save _carry_pack_through_faceless_save
         _catalog_cache _cc_models _commit_agent_config _commit_agent_config_locked
         _commit_promoted_avatar _config_lock _consume_refresh_exception
@@ -162,9 +162,8 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _commit_agent_config _commit_agent_config_locked api_agent_config
         """.split()),
     "default_agent": tuple("""
-        _AmbiguousDefaultTarget _binds_template _alias_binding_template
         _AppRegisteredTemplate _is_app_registered _installed_template_alias
-        api_default_agent
+        _set_default_template _spec_lock_or_unlocked_read api_default_agent
         """.split()),
     "capabilities": tuple("""
         _is_valid_capability_package _audit_capability api_capability_mcp_list
@@ -214,7 +213,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "54f616ae7fbc7dbee618439bb16204802f68596743729e9b02f8d74e083abde8"
+_BASE_SHAPE_DIGEST = "17c0f59eeb23e91bcd3f36603e0a3b2499c792871e45bae20e9a8dbf5b82183d"
 
 #: Definitions that stay in the facade file. The seams every owner reads; the
 #: config schema route; the model and picker reads with the crew model-pin checks,
@@ -314,7 +313,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Routes, the handlers package, sibling handlers and tests read private names
     off the facade as well as public ones, so every module-level binding survives."""
-    assert len(_BASE_NAMES) == 274
+    assert len(_BASE_NAMES) == 271
     assert sorted(name for name in _BASE_NAMES if not hasattr(agents, name)) == []
 
 
@@ -489,12 +488,12 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 94
+    assert len(names) == len(set(names)) == 93
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(f"{name} {_shape(getattr(agents, name))}" for name in _MOVED)
-    assert len(lines) == 94
+    assert len(lines) == 93
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -540,7 +539,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 121
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 120
 
 
 def test_the_owners_log_as_the_facade() -> None:

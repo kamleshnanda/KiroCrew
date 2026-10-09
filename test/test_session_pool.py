@@ -874,11 +874,16 @@ class TestModelMatchesPoolDefault:
         mgr._drain_and_claim.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_empty_pool_agent_skips_model_resolution_on_claim(self):
-        """No pool_agent configured → no model resolution on post-claim check."""
+    async def test_empty_pool_agent_is_the_default_template(self):
+        """No pool_agent configured → the pool is the default TEMPLATE.
+
+        A plain session asks the pool for the default template, so that is
+        what the pool prewarms and what the post-claim model check reads.
+        """
         from kiro_crew.providers.acp import AcpProvider
 
         mgr, factory = _make_manager(pool_agent="")
+        assert mgr._pool_agent == "kirocrew"
         pooled = _make_provider()
         pooled.__class__ = AcpProvider
         pooled.client = MagicMock()
@@ -888,12 +893,12 @@ class TestModelMatchesPoolDefault:
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
         mgr._schedule_replenish = MagicMock()
 
-        with patch.object(type(mgr), "_resolve_agent_model") as mock_resolve:
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="") as mock_resolve:
             await mgr.get_or_create("test-key", agent=None, model="claude-opus-4.6")
 
-        mock_resolve.assert_not_called()
-        # model provided but no pool_agent → pool_model is None → skip set_model
-        # (pool process already has whatever model kiro-cli defaults to)
+        mock_resolve.assert_called_once_with("kirocrew")
+        # The template pins no model → pool_model is "" → skip set_model (the
+        # pool process already has whatever model kiro-cli defaults to).
         pooled.client.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio

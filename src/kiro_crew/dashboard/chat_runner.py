@@ -5597,7 +5597,7 @@ async def _recover_app_agent_binding(
         )
     selected_agent = slot.agent
     bindings = await asyncio.to_thread(
-        resolve_session_agent_bindings,
+        functools.partial(resolve_session_agent_bindings, agent_kind=slot.agent_kind),
         resolve_agent_bindings,
         cfg,
         effective_session_key(slot),
@@ -5611,7 +5611,7 @@ async def _recover_app_agent_binding(
     return bindings
 
 
-def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
+def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
     """The slot bindings an eager handshake bakes into the session it registers.
 
     ONE definition, because two exist to be compared: ``_eager_spawn`` snapshots
@@ -5627,6 +5627,8 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
         slot.project,
         slot.reasoning_effort,
         slot.memory_store,
+        # The namespace the name is read in: a kind change is a binding change.
+        slot.agent_kind,
     )
 
 
@@ -5714,9 +5716,9 @@ async def _eager_spawn(
             _bound = _slot_binding(slot)
             kiro_agent: str | None = None
             # Canonical crew identity for watchdog overrides. Seeded from the
-            # slot, replaced by the resolver's alias below: an EMPTY slot runs
-            # the DEFAULT crew (resolve_agent_bindings step 2), whose overrides
-            # would be discarded by passing "" here.
+            # slot, replaced by the resolver's alias below. An EMPTY slot runs
+            # the default TEMPLATE (resolve_agent_bindings step 2), which is
+            # nobody's crew, so "" is its honest alias.
             crew_alias = slot.agent or ""
             agent_model = ""
             # Same default-model resolve as the real turn — the two MUST agree,
@@ -5729,7 +5731,7 @@ async def _eager_spawn(
                 cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 loaded_cfg = cfg
                 bindings = await asyncio.to_thread(
-                    resolve_session_agent_bindings,
+                    functools.partial(resolve_session_agent_bindings, agent_kind=_bound[5]),
                     resolve_agent_bindings,
                     cfg,
                     session_key,
@@ -5762,7 +5764,7 @@ async def _eager_spawn(
                             exc_info=True,
                         )
                     bindings = await asyncio.to_thread(
-                        resolve_session_agent_bindings,
+                        functools.partial(resolve_session_agent_bindings, agent_kind=_bound[5]),
                         resolve_agent_bindings,
                         cfg,
                         session_key,
@@ -9971,6 +9973,7 @@ async def _run_chat(
                 slot.memory_store,
                 slot._memory_assignment_from_history,
                 effective_session_key(slot),
+                slot.agent_kind,
             )
 
         # Serialize this turn's binding capture and session registration
@@ -10025,7 +10028,7 @@ async def _run_chat(
                 selected_binding[1], operation="chat_turn", source="unknown"
             )
             bindings = await asyncio.to_thread(
-                resolve_session_agent_bindings,
+                functools.partial(resolve_session_agent_bindings, agent_kind=selected_binding[6]),
                 resolve_agent_bindings,
                 cfg,
                 session_key,
@@ -10067,7 +10070,9 @@ async def _run_chat(
                         exc_info=True,
                     )
                 bindings = await asyncio.to_thread(
-                    resolve_session_agent_bindings,
+                    functools.partial(
+                        resolve_session_agent_bindings, agent_kind=selected_binding[6]
+                    ),
                     resolve_agent_bindings,
                     cfg,
                     session_key,
