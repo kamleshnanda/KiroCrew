@@ -4078,6 +4078,12 @@ class CronService:
             if not job.failure_recorded and not job.run_never_started:
                 job.record_failure()
             logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
+        # A one-shot whose run FAILED (error or timeout) is parked disabled, not
+        # consumed, so the job and its error stay visible and can be re-run. A
+        # run that never started is not a failed run and keeps retrying.
+        if job.schedule.kind == "at" and job.delete_after_run and job.last_status == "error":
+            if not job.run_never_started:
+                job.enabled, job.user_paused = False, True
 
     async def _execute(self, job: CronJob, claim: _RunClaim | None = None) -> None:
         """Run the job callback and update runtime fields (last_run_ts, last_status).
@@ -4203,6 +4209,9 @@ class CronService:
                 )
             elif job.id in by_id:
                 apply_run_record(by_id[job.id], job)
+                if job.delete_after_run and job.user_paused:
+                    # A failed one-shot parked by _execute_with_timeout: persist the park.
+                    by_id[job.id].enabled, by_id[job.id].user_paused = False, True
             # A fire-time-DENIED run is a policy refusal, not a completed run:
             # deleting the one-shot here would make the documented
             # resume-on-policy-loosening semantic impossible for at-jobs.
@@ -4220,7 +4229,7 @@ class CronService:
             # is exactly what a corrupt store destroys, and the deferred queue
             # below then never fired for a delete that was still owed on disk.
             delete_owed = job.delete_after_run and not (
-                job.fire_time_denied or job.run_never_started
+                job.fire_time_denied or job.run_never_started or job.last_status == "error"
             )
             removed_one_shot = False
             restore: list[tuple[CronJob, str]] = []
