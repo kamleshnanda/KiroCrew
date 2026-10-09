@@ -11,6 +11,9 @@ import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesRespo
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import { uploadMaxMb } from '../../utils/fileTokens'
+import ErrorNotice from '../../components/ErrorNotice'
 
 /**
  * Indexing progress and the Kiro requests a source still owes.
@@ -271,6 +274,12 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 }) {
   const ime = useImeGuard()
   const queryClient = useQueryClient()
+  // The advertised per-file ceiling is the gateway's `dashboard.upload_max_mb`,
+  // the same value the ingest handler enforces (shared config query key). A
+  // failed read shows no figure at all: the default is not what the gateway
+  // enforces when the operator changed it, so it is never presented as loaded.
+  const { data: dashCfg, error: dashCfgError } = useQuery<{ upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
+  const maxUploadMb = dashCfg ? uploadMaxMb(dashCfg) : null
   const [showAdd, setShowAdd] = useState(false)
   const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
   const [addUri, setAddUri] = useState('')
@@ -453,9 +462,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <IngestionProgress jobs={ingestionJobs} />
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_formats', { formats: supportedFormatsDisplay })}
-                {' ' + i18nT('pages.knowledge.sourcesList.max_file_size')}
+                {maxUploadMb !== null && ' ' + i18nT('pages.knowledge.sourcesList.max_file_size', { max: maxUploadMb })}
                 {acceptsNoExtension && ' ' + i18nT('pages.knowledge.sourcesList.files_with_no_extension_e_g_readme_are_ingested')}
               </div>
+              {/* No hand-off: the add-source panel holds the unsaved namespace choice and the folder name and path drafts. */}
+              <ErrorNotice
+                variant="inline"
+                testId="sources-upload-limit-error"
+                message={dashCfgError ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
+              />
             </>
           ) : (
             <>

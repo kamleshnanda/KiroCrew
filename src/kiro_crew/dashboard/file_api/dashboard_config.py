@@ -106,6 +106,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "decisions_enabled",
             "model_picker_hidden_models",
             "model_picker_configured",
+            "upload_max_mb",
         }
         body = {
             k: v
@@ -613,6 +614,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # Same discipline for Jira: Atlassian Cloud (*.atlassian.net) is
             # auto-recognized; self-hosted instances need explicit allowlisting.
             "jira_hosts": list(cfg.dashboard.jira_hosts),
+            # Read-only: the per-file upload ceiling (`dashboard.upload_max_mb`).
+            # Both composers pre-check against it and name it in their refusal;
+            # the upload handlers enforce it again server-side.
+            "upload_max_mb": cfg.dashboard.upload_max_mb,
             # Read-only: the `capabilities.social_share` governance answer. False
             # withdraws the "Share as image" menu entry; there is no toggle behind
             # it, so nothing here is writable.

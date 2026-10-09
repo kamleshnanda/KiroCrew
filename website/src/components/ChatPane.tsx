@@ -87,7 +87,7 @@ import { api } from '../api/client'
 import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { parseDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
+import { parseDirTokens, spliceDirTokens, uploadMaxMb, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
@@ -295,6 +295,17 @@ export default function ChatPane({
   // reportUploadFailure, which writes it to that slot's transcript instead.
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({})
   const uploadError = uploadErrors[slotKey] ?? ''
+  // Client-side pre-check refusals (too many files, over the size limit) are
+  // validation hints, not failures: nothing was sent. They render as plain
+  // status text, keyed per slot exactly like the banner above.
+  const [uploadHints, setUploadHints] = useState<Record<string, string>>({})
+  const uploadHint = uploadHints[slotKey] ?? ''
+  const setUploadHint = useCallback((message: string) => {
+    setUploadHints(prev => {
+      if (!message) { if (!(slotKey in prev)) return prev; const next = { ...prev }; delete next[slotKey]; return next }
+      return { ...prev, [slotKey]: message }
+    })
+  }, [slotKey])
   const setUploadError = useCallback((message: string, forSlot: string = slotKey) => {
     setUploadErrors(prev => {
       if (!message) { if (!(forSlot in prev)) return prev; const next = { ...prev }; delete next[forSlot]; return next }
@@ -607,7 +618,7 @@ export default function ChatPane({
   useEffect(() => { setFollowUpPicked(new Set()); followUpInsertedRef.current = null }, [followUpOptionsKey, singleSourceKey, followUpMulti, slotKey])
   // Quick Send parity with ChatPage: same query key, so the cache is shared
   // with the page and no extra request is made for a pane.
-  const { data: dashCfg } = useQuery<{ quick_send?: boolean; decisions_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
+  const { data: dashCfg } = useQuery<{ quick_send?: boolean; decisions_enabled?: boolean; upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   // Whether the split send button may offer `Auto (Jev)`: the fleet ceiling and
   // the owner's consent, both the gateway's answers (see useJevAutoSend).
   const jevAutoConsented = useJevAutoSend()
@@ -981,21 +992,23 @@ export default function ChatPane({
     // Clear FIRST, so a refusal from the previous attempt cannot stay on
     // screen and read as the reason this one failed.
     setUploadError('')
-    if (files.length > 20) { setUploadError(i18nT('pages.chatPage.too_many_files_max_20')); return }
+    setUploadHint('')
+    if (files.length > 20) { setUploadHint(i18nT('pages.chatPage.too_many_files_max_20')); return }
     // Video is deliberately exempt from this pre-check, exactly as in
-    // ChatPage: the server's video ceiling is far higher than 50 MB, so the
-    // figure this message states would be a lie for a recording. An over-cap
-    // recording's own 413 carries the real cap and surfaces through the
-    // res.error branch above -- the route every other server-side refusal
-    // already takes, and the one this change just wired to the banner.
-    const big = files.find((f) => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
-    if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
+    // ChatPage: the server's video ceiling is far higher than the per-file
+    // cap, so the figure this message states would be a lie for a recording.
+    // An over-cap recording's own 413 carries the real cap and surfaces
+    // through the res.error branch above -- the route every other server-side
+    // refusal already takes. The cap is the gateway's `dashboard.upload_max_mb`.
+    const maxMb = uploadMaxMb(dashCfg)
+    const big = files.find((f) => !VIDEO_EXT.test(f.name) && f.size > maxMb * 1024 * 1024)
+    if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })); return }
     const controller = new AbortController()
     const forSlot = slotKeyRef.current
     holdComposerSend(forSlot)
     registerComposerUpload(forSlot, controller)
     uploadMutation.mutate({ files, forSlot, controller })
-  }, [uploadMutation, setUploadError])
+  }, [uploadMutation, setUploadError, setUploadHint, dashCfg])
 
   // Classify BEFORE acting (issue #743): a dropped folder inserts its path
   // into the composer as an `@path/` token instead of taking the upload
@@ -2018,6 +2031,12 @@ export default function ChatPane({
           }}
         />
 
+        {uploadHint && (
+          <div role="status" data-testid="chat-pane-upload-hint" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+            <span className="text-sm text-text flex-1">{uploadHint}</span>
+            <Btn onClick={() => setUploadHint('')} aria-label={i18nT('app.dismiss')} className="shrink-0 px-1.5 py-0.5 text-muted hover:text-text"><X className="w-3.5 h-3.5" /></Btn>
+          </div>
+        )}
         {/* No hand-off: the composer draft (`input`) below is unsaved local state. */}
         <ErrorNotice
           className="mx-4 mt-2 mb-0 animate-rise"

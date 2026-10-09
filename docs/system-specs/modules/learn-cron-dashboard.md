@@ -4311,8 +4311,18 @@ the facade or switches slots, and that nothing outside `pages/chat/page/` except
 ### Composer file uploads
 
 `POST /api/upload/file` accepts at most 20 files per request. Images and
-documents use the 50 MB buffered path. Audio uses the same ceiling through the
-media streaming path, while video raises that path's ceiling to 512 MB.
+documents use the buffered path, whose per-file ceiling is
+`dashboard.upload_max_mb` (default 100, loader-bounded to 1-512, read per
+request through `dashboard/upload_limits.py` so an edit applies to the next
+upload). Audio uses the same ceiling through the media streaming path, while
+video raises that path's ceiling to 512 MB. An over-cap buffered file answers
+413 with code `file_too_large`, `max_mb`, and an error naming the file and the
+limit. `POST /api/knowledge/ingest` enforces the same ceiling (it streams to a
+staged file, so there it bounds disk rather than memory). `GET
+/api/dashboard/config` serves `upload_max_mb` read-only; both composers pre-check
+against it and the Knowledge page interpolates it into its "Max N MB per file"
+copy. It is separate from `files._MAX_UPLOAD_BYTES` (50 MB), which still bounds
+the in-memory read paths (file-raw, file-download, office and sheet preview).
 Every stored name receives a UUID prefix, and the handler attributes accepted and
 rejected requests through SEL. Binary formats with reliable signatures are
 validated by content before publication under their destination path.

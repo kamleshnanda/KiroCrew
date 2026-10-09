@@ -116,10 +116,10 @@ const pasteImage = (input: HTMLElement, file: File) =>
     },
   })
 
-/** A File whose reported size exceeds the 50 MB cap without allocating it. */
+/** A File whose reported size exceeds the default 100 MB cap without allocating it. */
 function oversizeImage(): File {
   const f = new File(['px'], 'huge.png', { type: 'image/png' })
-  Object.defineProperty(f, 'size', { value: 51 * 1024 * 1024 })
+  Object.defineProperty(f, 'size', { value: 101 * 1024 * 1024 })
   return f
 }
 
@@ -159,8 +159,9 @@ describe('ChatPage clipboard image paste', () => {
     // resolved through the same i18n path the component uses, so the
     // surfaces cannot drift.
     const { i18nT } = await import('../i18n/t')
-    const expected = i18nT('pages.chatPage.file_too_large', { name: 'huge.png' })
+    const expected = i18nT('pages.chatPage.file_too_large', { name: 'huge.png', max: 100 })
     expect(expected).toContain('huge.png') // guard: key resolved, not echoed
+    expect(expected).toContain('100 MB')
     await waitFor(() => expect(screen.getByText(expected)).toBeTruthy())
     expect(api.uploadFiles).not.toHaveBeenCalled()
   })
