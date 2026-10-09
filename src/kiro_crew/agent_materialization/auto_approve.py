@@ -13,6 +13,7 @@ KAS reads auto-approval as a ``permissions`` block derived from the filtered
 
 from __future__ import annotations
 
+import fnmatch
 from typing import Any, Mapping
 
 from kiro_crew import agent as agent_mod
@@ -169,6 +170,49 @@ def _may_auto_approve(ref: str) -> bool:
     tests without reaching into another module's namespace.
     """
     return may_skip_gate_now(ref)
+
+
+def _confirm_tool_patterns() -> tuple[str, ...]:
+    """The operator's ``hooks.confirm_tools`` patterns from ``config.json``.
+
+    Parsed through ``HooksConfig.from_dict`` so junk values degrade exactly as
+    they do for the gate. A config that cannot be read yields no patterns: the
+    rebuild then writes the same grants it writes for an operator who never set
+    the key.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.hooks import HooksConfig
+
+        hooks = KiroCrewConfig.load().hooks
+        return tuple(HooksConfig.from_dict(hooks if isinstance(hooks, dict) else {}).confirm_tools)
+    except Exception:  # noqa: BLE001 — a config read must not break a rebuild
+        agent_mod.logger.debug("hooks.confirm_tools unreadable; no confirm patterns", exc_info=True)
+        return ()
+
+
+def server_requires_confirmation(alias: str, patterns: tuple[str, ...]) -> bool:
+    """Whether a ``confirm_tools`` pattern names MCP server ``alias``.
+
+    ``allowedTools`` grants a whole server (``@alias``), so a pattern naming any
+    tool on the server withholds that grant: the calls then reach the gate,
+    which matches the pattern per tool. The bare ``*`` names every server; a
+    pattern that does not start with ``@`` (after an optional ``Running: ``) names
+    no server here and is left to the gate.
+    """
+    target = alias.lower()
+    for pattern in patterns:
+        text = pattern.strip()
+        if text == "*":
+            return True
+        if text.startswith("Running: "):
+            text = text[len("Running: ") :]
+        if not text.startswith("@"):
+            continue
+        server = text[1:].partition("/")[0]
+        if server and fnmatch.fnmatchcase(target, server.lower()):
+            return True
+    return False
 
 
 def _apply_allowed_tools_ceiling(config: dict, *, source: str) -> None:

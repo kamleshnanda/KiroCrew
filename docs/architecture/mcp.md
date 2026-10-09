@@ -347,6 +347,23 @@ SEL, `mcp_auto_approve_withheld` when a grant is taken away and
 `mcp_auto_approve_honoured` when an owner-written one is kept, so an operator can
 see both why a template tool prompts and which calls are skipping the gate.
 
+### Servers the operator asked to confirm
+
+A user-added server is granted in `allowedTools` as soon as it is mounted, so
+steering prose such as "confirm before making changes" is the only thing between
+the model and its write tools. `hooks.confirm_tools` in `config.json` is the
+structural opt-in: a list of tool patterns in the `auto_approve_tools` spelling
+(`@server`, `@server/tool*`, `Running: @server/*`, or `*` for every server). A
+user-added server any pattern names stays in `tools` and is kept out of
+`allowedTools` in both spellings, and its emitted `autoApprove` key is dropped,
+so each of its calls raises a permission request and reaches the PreToolUse
+gate. At the gate a `confirm_tools` match outranks an `auto_approve_tools`
+grant; deny tiers and the read-only classifier are unchanged, and a session in
+Trust or YOLO mode still approves what the user told it to. The withhold is
+recorded as `mcp_auto_approve_withheld` with the reason `hooks.confirm_tools`.
+The list is read when the agent spec is rebuilt, so a change applies from the
+next rebuild. With the key unset, both the spec and the gate behave as before.
+
 ### Two writers, one lock
 
 `~/.kiro/agents/kirocrew.json` has two independent writers: this whole-file

@@ -761,6 +761,10 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
     _shared_added: list[str] = []
     _shared_removed: list[str] = []
     _shared_not_auto: list[str] = []
+    _shared_confirm: list[str] = []
+    # The operator's ``hooks.confirm_tools``: a server it names keeps its mount
+    # and loses only the blanket grant, so every call on it reaches the gate.
+    _confirm_patterns = auto_approve._confirm_tool_patterns()
     # ``disabled`` is TIGHTEST-WINS across scopes, because the scopes disagree by
     # design: ``POST /api/mcp/toggle enabled:false`` writes ``disabled: true``
     # into the kiro global ONLY, so a same-named dashboard-store entry legitimately
@@ -906,8 +910,13 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             # user-installed MCP server on the primary agent — the same bypass
             # that was closed for app agents, at the second of the two places
             # that write such a list. One predicate serves both.
-            may_auto_approve = auto_approve._may_auto_approve(ref) and not any(
-                _grant_ref_is_in_alias_family(ref, base) for base in _disabled_grant_families
+            confirm_first = auto_approve.server_requires_confirmation(alias, _confirm_patterns)
+            may_auto_approve = (
+                not confirm_first
+                and auto_approve._may_auto_approve(ref)
+                and not any(
+                    _grant_ref_is_in_alias_family(ref, base) for base in _disabled_grant_families
+                )
             )
             keys = ("tools", "allowedTools") if may_auto_approve else ("tools",)
             for key in keys:
@@ -919,8 +928,14 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
                 # A grant written before the ceiling arrived must not survive
                 # it -- in either spelling, and not as a duplicate either.
                 _strip_owned_refs("allowedTools", strip_per_tool=True)
-                if ref not in _shared_not_auto:
-                    _shared_not_auto.append(ref)
+                if confirm_first:
+                    # kiro-cli's per-server ``autoApprove`` is the other path that
+                    # skips the gate. Only the emitted entry loses it; the
+                    # operator's own MCP config is not rewritten.
+                    valid_servers[alias].pop("autoApprove", None)
+                withheld = _shared_confirm if confirm_first else _shared_not_auto
+                if ref not in withheld:
+                    withheld.append(ref)
     if _shared_added:
         agent_mod.sel().log_api_access(
             caller="system",
@@ -941,6 +956,17 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             resources=(
                 f"{', '.join(_shared_not_auto)} mounted without auto-approve "
                 f"(governance ceiling); calls go through the approval gate"
+            ),
+        )
+    if _shared_confirm:
+        agent_mod.sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_withheld",
+            outcome="ok",
+            source="install_agent",
+            resources=(
+                f"{', '.join(_shared_confirm)} mounted without auto-approve "
+                f"(hooks.confirm_tools); calls go through the approval gate"
             ),
         )
     if _shared_removed:
