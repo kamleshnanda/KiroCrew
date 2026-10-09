@@ -2371,8 +2371,9 @@ per-sub-agent completion note. Dashboard chat only.
   reads it: `spawn_run` appends one `⚠ Agent '<name>' declares no tools…` line per
   such agent to its dispatch reply, and `spawn_sub_agents` adds an `unverified`
   field to each completed record from one (`mcp_tools/spawn.NO_TOOLS_AGENT_NOTE`,
-  `_declares_no_tools`, which reads the spec through
-  `acp.session_mcp.agent_spec_snapshot`, the read the session projection uses).
+  `_declares_no_tools`, which asks `agent_sdk.drivers.acp.agent_spec_declares_no_tools`;
+  that reads the spec through `acp.session_mcp.agent_spec_snapshot`, the read the
+  session projection uses).
   The dispatch is not refused: whether a task needs writes is not decidable from
   its prose, and these agents are correct for pure reasoning. An unreadable spec
   or a missing `tools` key attaches no note.

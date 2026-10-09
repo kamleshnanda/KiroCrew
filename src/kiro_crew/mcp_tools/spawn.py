@@ -703,26 +703,22 @@ NO_TOOLS_AGENT_NOTE = (
 def _declares_no_tools(agent: str, cwd: str = "") -> bool:
     """True when the spec *agent* resolves to declares an empty ``tools`` list.
 
-    Reads the spec the session projection reads (:func:`agent_spec_snapshot`,
-    project checkout first when *cwd* is given), so the answer matches the tool
-    surface the child is started with. An empty *agent* is the host default,
-    which carries tools. Fails quiet: an unreadable spec, a missing or non-list
-    ``tools``, or any read error answers False, so the note is never attached on
-    a guess.
+    Asked through the agent SDK's driver
+    (``agent_sdk.drivers.acp.agent_spec_declares_no_tools``), which reads the
+    spec the session projection reads, project checkout first when *cwd* is
+    given. An empty *agent* is the host default, which carries tools. Fails
+    quiet: an unreadable spec, a missing or non-list ``tools``, or any read error
+    answers False, so the note is never attached on a guess.
     """
     if not agent:
         return False
     try:
-        from kiro_crew.acp.session_mcp import agent_spec_snapshot
+        from kiro_crew.agent_sdk.drivers.acp import agent_spec_declares_no_tools
 
-        spec = agent_spec_snapshot(agent, work_dir=cwd or None)
+        return agent_spec_declares_no_tools(agent, cwd or None)
     except Exception:
         logger.debug("spec for %r unreadable; no tool-capability note", agent, exc_info=True)
         return False
-    if not isinstance(spec, dict):
-        return False
-    tools = spec.get("tools")
-    return isinstance(tools, list) and not tools
 
 
 def _collapse_effort_verdicts(
