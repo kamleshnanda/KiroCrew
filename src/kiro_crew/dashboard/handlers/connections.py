@@ -313,6 +313,48 @@ def _requested_provider(slug: str) -> Provider | None:
     return provider
 
 
+def _configured_remote_server(name: object) -> dict[str, str] | None:
+    """The owner-configured remote MCP server ``name`` names, or None.
+
+    A server the owner added outside the Connections registry can be signed in
+    to from the dashboard on the same mint engine. The bound is the owner's own
+    configuration rather than the registry: the caller supplies only a name, and
+    the URL the mint connects to is read from the main agent spec, which is the
+    same entry every session already starts. A name that is also a registry slug
+    is refused here so the two paths never share a mint row under different URLs,
+    and a name that ``mcp_server_alias`` would rewrite is refused because the
+    mint matches the engine's challenge by the spec key.
+
+    Returns ``{"slug": name, "mcp_url": url}`` for a mint, or None when the name
+    is malformed, unknown, local (no http(s) ``url``), or the spec is unreadable.
+    """
+    from kiro_crew import agent as _agent
+    from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.agent_files import AGENT_FILENAME
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    if not isinstance(name, str) or not _is_valid_mcp_name(name):
+        return None
+    if mcp_server_alias(name) != name or get_provider(name.lower()) is not None:
+        return None
+
+    spec = _read_agent_spec(
+        _agent.kiro_agents_dir_path() / AGENT_FILENAME,
+        operation="connections_mint",
+        source="dashboard",
+    )
+    if not isinstance(spec, dict):
+        return None
+    servers = spec.get("mcpServers")
+    entry = servers.get(name) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    url = entry.get("url")
+    if not isinstance(url, str) or urlsplit(url).scheme not in ("http", "https"):
+        return None
+    return {"slug": name, "mcp_url": url}
+
+
 async def _mint_request(
     request: web.Request,
 ) -> tuple[dict, Provider] | web.Response:
@@ -337,6 +379,56 @@ async def _mint_request(
     return body, provider
 
 
+async def _configured_mint_request(
+    request: web.Request,
+) -> dict[str, str] | web.Response | None:
+    """The configured server a mint body names under ``server``, if it names one.
+
+    None means the body carries no ``server`` field and the registry path
+    applies. A ``server`` that does not resolve to an owner-configured remote
+    server is a 400, never a fall-through to the registry: the caller asked for
+    a specific server and must not be handed a different one.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a client error, not a fault
+        return _bad_request("body must be JSON", "invalid_body")
+    if not isinstance(body, dict) or "server" not in body:
+        return None
+    server = await asyncio.to_thread(_configured_remote_server, body.get("server"))
+    if server is None:
+        return _bad_request("unknown server", "unknown_server")
+    return server
+
+
+async def _start_configured_server_mint(server: dict[str, str]) -> web.Response:
+    """Schedule a mint for an owner-configured remote server.
+
+    The same engine and row table as a provider mint, minus the two steps only a
+    registry provider has: a pre-registered OAuth app to check, and a premint row
+    to adopt. The card polls ``GET /api/connections/mint?server=…`` for the URL.
+    """
+    from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
+
+    name = server["slug"]
+    token, prior = await reserve_mint_row(name)
+    try:
+        task = asyncio.create_task(start_oauth_mint(name, server["mcp_url"], token, prior))
+    except BaseException:
+        if prior is not None:
+            await _dispose_mint(prior)
+        raise
+    _mint_tasks.add(task)
+    task.add_done_callback(_mint_tasks.discard)
+    sel().log_api_access(
+        caller="dashboard",
+        operation="connections_mint",
+        outcome="started",
+        resources=f"server:{name}",
+    )
+    return web.json_response({"ok": True, "slug": name, "state": "minting", "token": token})
+
+
 async def api_connections_mint(request: web.Request) -> web.Response:
     """POST /api/connections/mint — start minting a provider's approval URL.
 
@@ -348,6 +440,11 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     owner_denied = await require_owner_dashboard_request(request, "connections_mint")
     if owner_denied is not None:
         return owner_denied
+    configured = await _configured_mint_request(request)
+    if isinstance(configured, web.Response):
+        return configured
+    if configured is not None:
+        return await _start_configured_server_mint(configured)
     parsed = await _mint_request(request)
     if isinstance(parsed, web.Response):
         return parsed
@@ -435,7 +532,14 @@ async def api_connections_mint_state(request: web.Request) -> web.Response:
     than as a failure.
     """
     slug = str(request.query.get("slug") or "").strip().lower()
-    if _requested_provider(slug) is None:
+    if "server" in request.query:
+        # An owner-configured server's row is keyed by its exact name; the
+        # registry's lowercase slug rule does not apply to it.
+        server = await asyncio.to_thread(_configured_remote_server, request.query["server"])
+        if server is None:
+            return _bad_request("unknown server", "unknown_server")
+        slug = server["slug"]
+    elif _requested_provider(slug) is None:
         return _bad_request("unknown provider", "unknown_provider")
 
     # Function-local for the same reason as the POST above: the boot path must not

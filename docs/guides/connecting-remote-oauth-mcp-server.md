@@ -191,6 +191,19 @@ Reaching **Signed in** is what gives the flow an ending. Because the panel is
 served from the probe cache for its TTL, a row you just authenticated can still
 read "Sign-in required" until you re-probe it (the panel names that step).
 
+With the Connections UI on (the default), a remote row can start the sign-in in
+place, for a registry provider and for a server you added yourself alike:
+
+- **Sign in** on a **Sign-in required** row opens the provider's approval link.
+- **Sign in again** on a **Signed in** row, or under an OAuth server's `401`
+  error, first checks the held grant and asks for consent only when it no longer
+  works (expired, revoked, or minted for other scopes).
+
+The gateway reads the server's URL from your own configuration; the dashboard
+sends only the server's name. A local (stdio) server, a name containing `/`, and
+a user-added server whose name is also a registry provider's keep the chat
+guidance instead.
+
 ## Complete the browser flow and select a team/tenant
 
 Follow the **Authorize** link into a browser and complete the provider's consent
