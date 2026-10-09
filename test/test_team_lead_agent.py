@@ -1119,6 +1119,63 @@ class TestAHandEditedSpecIsRefusedRatherThanRewritten:
             "kirocrew-team-lead", agent_state.spec_digest(after), strict=True
         ), "the digest was renewed for bytes this installer never wrote"
 
+    def test_a_model_reset_aborts_when_ownership_cannot_be_read(self, tmp_path, monkeypatch):
+        """A transient read of the ownership record must ABORT the reset, not fall through
+        as "not confirmed". The confirmed-ours spec at this stem has no heal path: if a
+        failed read were degraded to False, the reset would take the unconfirmed-write
+        branch, rewrite the bytes WITHOUT renewing the recorded digest, and every later
+        start would then refuse the file forever -- for a user action, with storage that
+        had only hiccuped. The fail-safe answer is to do nothing and let the next attempt,
+        once the read recovers, succeed."""
+        _stub_environment(tmp_path, monkeypatch)
+        base = agent.build_agent_config()
+        base["model"] = "my-pinned-model"
+        monkeypatch.setattr(agent, "build_agent_config", lambda: json.loads(json.dumps(base)))
+        target = tmp_path / TEAM_LEAD_AGENT_FILENAME
+        assert agent._install_team_lead_agent() is agent.InstallOutcome.WRITTEN
+        before_bytes = target.read_text(encoding="utf-8")
+        assert json.loads(before_bytes).get("model"), (
+            "the fixture wrote no model pin, so a reset would strip nothing and this "
+            "test could not be about the reset"
+        )
+        assert agent.spec_start_refusal("kirocrew-team-lead") is None
+
+        # Make the STRICT ownership-sidecar read raise the way a transient I/O error
+        # does, exercising the real predicate path (``_attribution_reason`` ->
+        # ``_unconfirmed_digest_reason`` -> ``managed_digest_matches(strict=True)``),
+        # not a stub of the predicate. Scoped to the ownership-digest read so the reset's
+        # other strict reads (capability intent, spec load) still work -- the point is a
+        # transient failure of ONLY the ownership confirmation.
+        real_matches = agent_state.managed_digest_matches
+
+        def _flaky_matches(name, candidate, *, strict=False):
+            if strict:
+                raise OSError("transient EIO reading the ownership sidecar")
+            return real_matches(name, candidate, strict=strict)
+
+        monkeypatch.setattr(agent_state, "managed_digest_matches", _flaky_matches)
+
+        with pytest.raises(FileNotFoundError):
+            agent.reset_agent_model("kirocrew-team-lead")
+
+        # The spec was NOT mutated: the model pin and every byte survive, so when the
+        # read recovers the agent is still its confirmed managed write.
+        monkeypatch.setattr(agent_state, "managed_digest_matches", real_matches)
+        assert (
+            target.read_text(encoding="utf-8") == before_bytes
+        ), "a failed ownership read rewrote the spec; the reset must abort before mutation"
+        assert (
+            agent.spec_start_refusal("kirocrew-team-lead") is None
+        ), "the spec was left unconfirmable by a transient read failure"
+        assert agent_state.managed_digest_matches(
+            "kirocrew-team-lead", agent_state.spec_digest(json.loads(before_bytes)), strict=True
+        )
+        # And once the read recovers, the ordinary reset still works.
+        path, previous = agent.reset_agent_model("kirocrew-team-lead")
+        assert path == target and previous
+        assert not json.loads(target.read_text(encoding="utf-8")).get("model")
+        assert agent.spec_start_refusal("kirocrew-team-lead") is None
+
     def test_a_project_shadow_refuses_the_start_and_names_the_project_file(
         self, tmp_path, monkeypatch
     ):
