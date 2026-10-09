@@ -209,12 +209,13 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth, busyMode, topInset, onOpenCommandCenter, composerInput, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; onOpenCommandCenter?: () => void; composerInput?: unknown }) => (
+  default: ({ slotKey, agentLocked, followContentWidth, busyMode, topInset, onOpenCommandCenter, composerInput, crewmateGreeting, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; onOpenCommandCenter?: () => void; composerInput?: unknown; crewmateGreeting?: React.ReactNode }) => (
     <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-top-inset={topInset ?? ''}>
       {slotKey}
       {onOpenCommandCenter && <button onClick={onOpenCommandCenter}>Open task dashboard</button>}
       {/* A static opening card is gone: no host may pass one. */}
       {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
+      {crewmateGreeting}
     </div>
   ),
 }))
@@ -5540,6 +5541,14 @@ describe('MembersPage colliding slugs (live projection)', () => {
   })
 })
 
+/** The greeting is drawn INSIDE the chat (ChatPane's `crewmateGreeting`), in
+ *  the crewmate's own message bubble, not as a card above the transcript. */
+function expectCrewmateMessage(card: HTMLElement) {
+  expect(within(screen.getByTestId('chat-pane-stub')).getByTestId(card.dataset.testid!)).toBe(card)
+  expect(card.closest('[data-testid="crewmate-message"]')).not.toBeNull()
+  expect(card.querySelector('.message-bubble.crewmate-bubble')).not.toBeNull()
+}
+
 describe('MembersPage cold welcome (a new or long-idle thread)', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 
@@ -5552,6 +5561,8 @@ describe('MembersPage cold welcome (a new or long-idle thread)', () => {
     await renderPage([row({ last_active_ts: 1 })])
     fireEvent.click(await rosterRow('oncall'))
     const card = await screen.findByTestId('member-welcome-card', undefined, PANE_READY)
+    // A message from the crewmate in its chat, not a card above it.
+    expectCrewmateMessage(card)
     expect(api.memberRecap).toHaveBeenCalledExactlyOnceWith('oncall', 'oncall')
     expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent('Paused: Rotate the pager keys (next: confirm with Sam)')
     expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent("Recent session, may be finished: Triage last night's alarms")
@@ -5574,11 +5585,12 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
   }
   beforeEach(() => { sessionStorage.clear() })
 
-  it('opening a crewmate mid-goal says where the goal stands and the next step, above the chat, without a chat turn', async () => {
+  it('opening a crewmate mid-goal says where the goal stands and the next step, as its message in the chat, without a chat turn', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     await renderPage([row()])
     fireEvent.click(await rosterRow('oncall'))
     const card = await screen.findByTestId('member-resume-card', undefined, PANE_READY)
+    expectCrewmateMessage(card)
     expect(api.crewBoard).toHaveBeenCalledExactlyOnceWith('member-oncall')
     expect(within(card).getByTestId('member-resume-goal')).toHaveTextContent('Ship the crew page')
     expect(within(card).getByTestId('member-resume-counts')).toHaveTextContent('Finished 1 · Running 1 · Idle 0 · Needs a look 1')
