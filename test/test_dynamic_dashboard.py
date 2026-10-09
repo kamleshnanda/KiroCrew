@@ -1183,11 +1183,30 @@ class TestThePackageSeam:
         import kiro_crew.dashboard_templates as _templates_pkg
 
         monkeypatch.setattr(_templates_pkg, "instance", fake, raising=False)
-
-    def read(self) -> Any:
+        # FORCE the fallback. These cases are about the template-store resolution, and
+        # it is only reached when no write gate is importable -- which is true on this
+        # branch and will stop being true, so the condition is stated rather than
+        # inherited from what the branch happens to carry.
         from kiro_crew import dashboard_package
 
-        return dashboard_package.read_package_model("atlas", "atlas")
+        monkeypatch.setattr(dashboard_package, "_from_package", lambda slug, member: None)
+
+    def read(self, slug: Any = "atlas") -> Any:
+        from kiro_crew import dashboard_package
+
+        return dashboard_package.read_package_model(slug, "atlas")
+
+    def test_the_slug_is_optional_because_the_write_path_holds_only_a_member(self) -> None:
+        """The two callers are keyed differently: a route holds an artifact slug, the
+        write path holds only the member. A required slug would make the write path
+        invent one, so it defaults to None and the binding resolves it."""
+        import inspect
+
+        from kiro_crew import dashboard_package
+
+        params = inspect.signature(dashboard_package.read_package_model).parameters
+        assert params["slug"].default is None
+        assert str(params["slug"].annotation) == "str | None"
 
     def test_a_live_package_hands_back_a_model_a_write_can_be_checked_against(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1392,6 +1411,294 @@ class TestThePackageSeam:
         assert got.model is not None
         assert dashboard_package.STATE_LIVE in dashboard_package.PACKAGE_STATES
         assert "stale" not in dashboard_package.PACKAGE_STATES
+
+
+#: A canonical package Model as the write gate hands one over: field name -> the
+#: type's own canonical keys, each carrying the ``source`` the package line made
+#: required. One fold field and one agentic field, because the split between them is
+#: what the translation has to preserve.
+PACKAGE_FIELDS: dict[str, Any] = {
+    "open_prs": {
+        "type": "number",
+        "source": {"fold": "work", "path": "conductor.entries"},
+    },
+    "lane": {
+        "type": "enum",
+        "choices": ["green", "red"],
+        "source": {"agentic": True},
+    },
+    "headline": {"type": "text", "source": {"agentic": True}},
+    "seen_at": {"type": "timestamp", "source": {"agentic": True}},
+    "blocked": {"type": "bool", "source": {"agentic": True}},
+}
+
+
+class TestTheRealPackagePath:
+    """The reader against a real ``kind="dashboard"`` artifact and the write gate.
+
+    The gate (``artifact_store.dashboard_package``) is the package line's and arrives on
+    its own branch, so it is stood in here the way the template store is stood in above.
+    What these cases pin is this module's own half: the binding resolution, the
+    ``forbidden`` rule, and the Model -> ``TemplateManifest`` translation.
+    """
+
+    def gate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        bound_to: str = "crewmate:atlas",
+        fields: dict[str, Any] | None = None,
+        content: str = "{}",
+        version: int = 3,
+        resolved: str | None = "dash-atlas",
+        get_raises: Exception | None = None,
+        parse_raises: Exception | None = None,
+    ) -> None:
+        from kiro_crew import artifacts
+
+        package = {"bound_to": bound_to}
+
+        def _parse(_content: str) -> Any:
+            if parse_raises is not None:
+                raise parse_raises
+            return package
+
+        def _model_of(pkg: Any, *, slug: str = "", version: int = 0) -> Any:
+            return SimpleNamespace(
+                slug=slug,
+                version=version,
+                bound_to=pkg["bound_to"],
+                fields=dict(PACKAGE_FIELDS if fields is None else fields),
+            )
+
+        gate = SimpleNamespace(
+            model_of=_model_of,
+            parse_package=_parse,
+            resolve_bound_slug=lambda bound, **_kw: resolved,
+        )
+        monkeypatch.setitem(sys.modules, "kiro_crew.artifact_store.dashboard_package", gate)
+
+        def _get(slug: str, **_kw: Any) -> Any:
+            if get_raises is not None:
+                raise get_raises
+            return SimpleNamespace(slug=slug, content=content, version=version)
+
+        monkeypatch.setattr(
+            artifacts, "get_default_store", lambda: SimpleNamespace(get=_get), raising=False
+        )
+
+    def read(self, slug: Any = None, member: str = "atlas") -> Any:
+        from kiro_crew import dashboard_package
+
+        return dashboard_package.read_package_model(slug, member)
+
+    def test_the_binding_resolves_the_slug_when_the_caller_has_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_LIVE
+        assert got.model is not None
+        # The PACKAGE's artifact version, which is the number a write is stamped with.
+        assert got.model.instance_version == 3
+        assert got.model.manifest.id == "dash-atlas"
+
+    def test_nothing_bound_is_empty_and_not_an_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """v3 ships no default page, so nothing is stored until the agent composes a
+        layout. That is the ordinary first state of every crewmate."""
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, resolved=None)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_EMPTY
+        assert got.model is None
+
+    def test_a_package_bound_to_another_member_is_forbidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rule, written once: forbidden when the package stored at this slug has a
+        ``bound_to`` that does not name this member."""
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, bound_to="crewmate:someone-else")
+        got = self.read(slug="dash-theirs")
+        assert got.state == dashboard_package.STATE_FORBIDDEN
+        assert got.model is None
+        assert "crewmate:someone-else" in got.state_reason
+        assert "crewmate:atlas" in got.state_reason
+
+    def test_a_session_bound_package_is_not_a_members_either(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The comparison is equality after the scope prefix, so ``session:<slot key>``
+        names a slot and not a crewmate. A member reaching one is reaching past its own
+        page, which is exactly what ``forbidden`` is for."""
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, bound_to="session:dashboard:chat-1")
+        assert self.read(slug="dash-slot").state == dashboard_package.STATE_FORBIDDEN
+
+    def test_forbidden_cannot_fire_on_the_binding_resolved_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A slug the binding scan found matched on this member's own binding, so the
+        check cannot disagree with it. ``forbidden`` is for the caller that NAMED a
+        slug -- which is what makes member a real second argument."""
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, bound_to="crewmate:atlas", resolved="dash-atlas")
+        assert self.read().state == dashboard_package.STATE_LIVE
+
+    def test_a_package_whose_content_will_not_parse_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What the binding scan cannot report. It SKIPS a package it cannot parse
+        because it answers "which slug" and has no way to say why, so only a read of a
+        named slug can tell corrupt from absent."""
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, parse_raises=ValueError("model.types[0]: bad type"))
+        got = self.read(slug="dash-atlas")
+        assert got.state == dashboard_package.STATE_ERROR
+        assert "bad type" in got.state_reason
+
+    def test_a_slug_that_holds_nothing_is_empty_and_not_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import artifacts, dashboard_package
+
+        self.gate(monkeypatch, get_raises=artifacts.ArtifactNotFoundError("gone"))
+        assert self.read(slug="dash-gone").state == dashboard_package.STATE_EMPTY
+
+    def test_a_failed_read_raises_rather_than_reporting_a_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, get_raises=OSError("disk gone"))
+        with pytest.raises(dashboard_package.PackageReadError):
+            self.read(slug="dash-atlas")
+
+    # -- the translation ---------------------------------------------------- #
+
+    def test_a_fold_field_stays_fold_backed_and_is_not_writable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The source key the package line made required is what this turns on. Without
+        it the only available guess is ``agentic: true``, which would make every field
+        on every page agent-writable and erase the fold-backed half of the dashboard."""
+        self.gate(monkeypatch)
+        manifest = self.read().model.manifest
+        spec = manifest.fields["open_prs"]
+        assert spec.agentic is False
+        assert (spec.fold, spec.path) == ("work", "conductor.entries")
+        assert "open_prs" not in dashboard_agentic.agentic_fields(manifest)
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(self.read().model, "open_prs", 4)
+        assert refused.value.code == "field_not_agentic"
+
+    @pytest.mark.parametrize(
+        ("field", "manifest_type"),
+        [
+            ("open_prs", "number"),
+            ("headline", "string"),
+            ("blocked", "boolean"),
+            ("seen_at", "string"),
+            ("lane", "string"),
+        ],
+    )
+    def test_each_package_type_is_checked_as_its_manifest_type(
+        self, monkeypatch: pytest.MonkeyPatch, field: str, manifest_type: str
+    ) -> None:
+        self.gate(monkeypatch)
+        assert self.read().model.manifest.fields[field].type == manifest_type
+
+    def test_an_enums_choices_become_the_fields_shape(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``enum`` and ``timestamp`` both collapse to ``string``, so the choices are
+        the only thing that keeps a value outside the set refusable."""
+        self.gate(monkeypatch)
+        model = self.read().model
+        assert model.manifest.fields["lane"].shape is not None
+        assert model.manifest.fields["lane"].shape.enum == ("green", "red")
+        assert dashboard_agentic.check_write(model, "lane", "green")["value"] == {"v": "green"}
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(model, "lane", "purple")
+        assert refused.value.code == "wrong_shape"
+
+    def test_a_fold_field_declares_no_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The manifest refuses a shape on a fold field: the fold writes that value, so
+        a shape there would promise something no write path checks."""
+        self.gate(monkeypatch)
+        assert self.read().model.manifest.fields["open_prs"].shape is None
+
+    def test_the_synthesized_manifest_does_not_claim_to_be_a_template(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``source`` gets its own fourth value rather than borrowing ``user``, so the
+        render gate and the catalogue scan can still tell a package from a template a
+        person wrote. ``id`` is the slug, because there is no template to name and the
+        string is read aloud to the agent in two refusal sentences."""
+        from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import manifest as manifest_mod
+
+        self.gate(monkeypatch)
+        manifest = self.read().model.manifest
+        assert manifest.source == dashboard_package.PACKAGE_MANIFEST_SOURCE == "package"
+        assert manifest.source in manifest_mod.SOURCES
+        assert manifest.id == "dash-atlas"
+
+    def test_a_package_source_is_not_renderable(self) -> None:
+        """A package is agent-composed, and the set that decides whether a page may
+        EXECUTE admits only provenance a person here has looked at. v3's View carries
+        no script, but making a package-sourced manifest adoptable as a running page is
+        the display line's to earn with the minted wrapper -- nothing on the write path
+        reads this set, so widening it here would buy nothing and open that path."""
+        from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import catalog
+        from kiro_crew.dashboard_templates import instance as instance_store
+
+        assert dashboard_package.PACKAGE_MANIFEST_SOURCE not in instance_store.RENDERABLE_SOURCES
+        assert instance_store.RENDERABLE_SOURCES == frozenset({catalog.BUILTIN_SOURCE})
+
+    def test_a_type_this_build_cannot_map_is_an_error_not_a_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A package the gate validated and this reader cannot express: a disagreement
+        between two readers, so a state with a sentence rather than a raise."""
+        from kiro_crew import dashboard_package
+
+        self.gate(
+            monkeypatch,
+            fields={"when": {"type": "duration", "source": {"agentic": True}}},
+        )
+        got = self.read()
+        assert got.state == dashboard_package.STATE_ERROR
+        assert "duration" in got.state_reason
+
+    def test_every_package_data_type_has_a_manifest_type(self) -> None:
+        """The drift pin on the mapping, for as long as the mapping is the only spelling.
+
+        ``timestamp`` and ``enum`` both collapse to ``string``, so the package catalogue
+        does not carry this information and the table here is a SECOND place it is
+        written down. The package line has offered ``manifest_type`` / ``manifest_shape``
+        on its ``FieldType``, which supersedes the table; until then this is what names
+        a type added upstream with no row here.
+
+        SKIPPED while the gate is on the package line's branch, because there is no
+        catalogue to compare against -- and a skip that says so is honest where a
+        frozen copy of the five names would be a third spelling.
+        """
+        from kiro_crew import dashboard_package
+
+        gate = pytest.importorskip(
+            "kiro_crew.artifact_store.dashboard_package",
+            reason="the package write gate is not on this branch yet",
+        )
+        assert set(gate.data_type_catalog()) == set(dashboard_package._PACKAGE_TYPE_TO_MANIFEST)
 
 
 def test_a_written_value_reaches_a_page_that_declares_an_agentic_array():

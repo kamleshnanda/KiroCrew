@@ -6,10 +6,19 @@ agent's value against the Model **inside that current package** -- never against
 builtin template manifest, which is what it did while templates were the only source.
 
 THIS MODULE IS THE WHOLE SEAM. :func:`read_package_model` is the only place that knows
-where a Model comes from; the write path calls it and nothing else. When the package
-artifact itself lands (CREW-21656, owned separately), only this function's BODY
-changes -- its signature, its four states and the refusal each maps to are settled in
-``INTERFACE.md`` and consumed by :mod:`kiro_crew.dashboard_agentic`.
+where a Model comes from; the write path calls it and nothing else. Its signature, its
+four states and the refusal each maps to are settled in ``INTERFACE.md``, agreed with
+the package line, and consumed by :mod:`kiro_crew.dashboard_agentic`.
+
+Why the reader is HERE and the write gate is not
+------------------------------------------------
+The package has two jobs with opposite import weight. The write gate -- validate,
+canonicalize, decide the version, merge a revert -- is imported by
+:mod:`kiro_crew.artifacts`, so it has to stay cheap, and it lives beside the artifact
+store's other field rules at :mod:`kiro_crew.artifact_store.dashboard_package`. This
+reader imports that gate AND :mod:`kiro_crew.dashboard_templates.manifest`, which
+reaches the projection registry and template parity. One combined module would drag
+that graph into every caller of :mod:`kiro_crew.artifacts`.
 
 Why a state and not an exception for a content problem
 ------------------------------------------------------
@@ -30,13 +39,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from kiro_crew.dashboard_agentic import Instance
+
+if TYPE_CHECKING:  # the manifest reaches the projection registry, so not at run time
+    from kiro_crew.dashboard_templates.manifest import TemplateManifest
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PACKAGE_MANIFEST_SOURCE",
     "PACKAGE_STATES",
     "STATE_EMPTY",
     "STATE_ERROR",
@@ -100,35 +113,216 @@ class PackageRead:
     state_reason: str
 
 
-def read_package_model(slug: str, member: str) -> PackageRead:
-    """The Model inside *slug*'s current dashboard package.
+#: The ``bound_to`` scope a MEMBER's package is spelled under. The other scope the
+#: binding grammar admits is ``session:<slot key>``, which names a slot and not a
+#: crewmate, so it is never what a member resolves to.
+_CREWMATE_SCOPE: Final[str] = "crewmate:"
 
-    STUB BODY. The signature, the four states and the sentence are what callers depend
-    on and they are final; where the Model is read from is not, and this reads it from
-    the template instance store so the seam is exercised end to end and today's
-    behaviour does not regress while the package artifact is built.
+#: The ``source`` a synthesized manifest declares. See :data:`manifest.SOURCES`: its own
+#: word, so the render gate and the catalogue scan can still tell a package from a
+#: template a person wrote.
+PACKAGE_MANIFEST_SOURCE: Final[str] = "package"
 
-    The stub's own mapping, which is ``read_instance``'s existing rule verbatim:
+#: One package data type -> the manifest type it is checked as.
+#:
+#: EXPLICIT and declarative, which is the shape this has to be while it is the only
+#: spelling. ``timestamp`` and ``enum`` both land on ``string``, so this is information
+#: the package catalogue does not carry yet and this table is the second place the
+#: mapping is written down. The package line has offered to put ``manifest_type`` and
+#: ``manifest_shape`` on its ``FieldType``; when that lands, a table lookup off the
+#: catalogue SUPERSEDES this dict and
+#: ``test_every_package_data_type_has_a_manifest_type`` is what names a type added
+#: upstream with no row here in the meantime.
+_PACKAGE_TYPE_TO_MANIFEST: Final[dict[str, str]] = {
+    "number": "number",
+    "text": "string",
+    "bool": "boolean",
+    # An instant is checked as the ISO string it is written as. The manifest has no
+    # temporal type, and inventing one here would be a type no page knows how to draw.
+    "timestamp": "string",
+    # A label out of a fixed set: a string, plus the choices as the field's own Shape,
+    # which is what makes a value outside the set refusable rather than merely odd.
+    "enum": "string",
+}
 
-    * ``live`` / ``stale`` resolve to the stored copy's manifest -- a stale copy has a
-      complete manifest and renders, and a write is checked against the same manifest
-      the page is drawn from;
-    * ``empty`` resolves to the DEFAULT template's manifest, because that is the page
-      the crewmate is actually shown and validating against it is what makes a written
-      value appear where the reader is looking;
-    * ``error`` is the one state where no manifest parses, so there is nothing to
-      validate against;
-    * no instance AND no default in the registry answers :data:`STATE_EMPTY`.
 
-    :data:`STATE_FORBIDDEN` is UNREACHABLE from the stub, and that is a fact about the
-    stub rather than about the contract: the instance store is keyed by the member's own
-    slug and has no per-artifact owner check to fail. The branch, its refusal and its
-    test exist so the real body only has to return the value.
+class _ModelUntranslatable(Exception):
+    """A validated package this reader cannot express as manifest field specs."""
 
-    An absent registry is NOT one of the states and is not caught: the registry ships in
-    the same package as this module, so a build without it is a packaging fault, and
-    reporting it as ``empty`` would send every crewmate to create a package through a
-    store the build does not have.
+
+def _manifest_of(model: object) -> "TemplateManifest":
+    """A package's Model as the ``TemplateManifest`` the write path checks against.
+
+    The translation lives in this module because the write path must not learn the
+    package's vocabulary -- that is the whole point of one seam. Every row of it is
+    recorded in ``INTERFACE.md``.
+
+    ``id`` is the SLUG. A package is not a template and has no template id, and this
+    string is read aloud to the agent in two refusal sentences ("is not a field of
+    template 'report'"), so it has to name something the agent can actually go and
+    look at. Rewording those two sentences for v3 belongs to the agent line.
+    """
+    from kiro_crew.dashboard_templates.manifest import (
+        FieldSpec,
+        Shape,
+        TemplateManifest,
+    )
+
+    slug = str(getattr(model, "slug", "") or "")
+    version = int(getattr(model, "version", 0) or 0)
+    specs: dict[str, FieldSpec] = {}
+    for name, spec in getattr(model, "fields", {}).items():
+        declared = str(spec.get("type") or "")
+        mapped = _PACKAGE_TYPE_TO_MANIFEST.get(declared)
+        if mapped is None:
+            raise _ModelUntranslatable(
+                f"this dashboard package declares field {name!r} as type {declared!r}, "
+                "which this gateway cannot check a write against -- it is newer than "
+                "this build's data-type mapping"
+            )
+        source = spec.get("source") or {}
+        agentic = source.get("agentic") is True
+        choices = spec.get("choices")
+        shape = (
+            Shape(type=mapped, enum=tuple(choices))
+            if agentic and declared == "enum" and isinstance(choices, list) and choices
+            # A fold-backed field declares no shape: the manifest refuses one there,
+            # because the fold writes the value and a shape would promise something no
+            # write path checks.
+            else None
+        )
+        specs[str(name)] = FieldSpec(
+            name=str(name),
+            type=mapped,
+            fold=str(source.get("fold")) if not agentic else None,
+            path=str(source.get("path")) if not agentic else None,
+            agentic=agentic,
+            shape=shape,
+        )
+    return TemplateManifest(
+        id=slug,
+        # A positive int or the manifest refuses it, and version 0 is what an artifact
+        # with no version reads as.
+        version=max(version, 1),
+        title=f"dashboard package {slug}" if slug else "dashboard package",
+        description="a dashboard composed by this crewmate",
+        source=PACKAGE_MANIFEST_SOURCE,
+        fields=specs,
+    )
+
+
+def read_package_model(slug: str | None = None, member: str = "") -> PackageRead:
+    """The Model inside *member*'s current dashboard package.
+
+    *slug* names the package artifact. It is OPTIONAL because the two callers are keyed
+    differently: a route holds a slug, and the write path holds only the member, so a
+    required slug would make the write path invent one. Passing ``None`` resolves it
+    from *member*'s binding, and passing one keeps the corrupt-versus-absent
+    distinction the states exist for -- a binding scan cannot report a reason, so it
+    SKIPS a package whose content will not parse, and only a read of a named slug can
+    call that ``error``.
+
+    Passing *slug* also makes *member* a real second argument rather than a redundant
+    one, because it is what :data:`STATE_FORBIDDEN` is decided on.
+
+    Content problems return a state. Only a failed read raises
+    :class:`PackageReadError`.
+    """
+    resolution = _from_package(slug, member)
+    if resolution is not None:
+        return resolution
+    return _from_template_instance(slug or member, member)
+
+
+def _from_package(slug: str | None, member: str) -> PackageRead | None:
+    """Read the real ``kind="dashboard"`` artifact, or ``None`` when there is no gate.
+
+    ``None`` means this build carries no :mod:`kiro_crew.artifact_store.dashboard_package`
+    -- the write gate is the package line's and lands on its own branch -- and the
+    caller falls back to :func:`_from_template_instance`. That fallback is the ONLY part
+    of this module that goes when the gate is merged; everything a caller depends on is
+    decided here.
+    """
+    try:
+        from kiro_crew.artifact_store.dashboard_package import (
+            model_of,
+            parse_package,
+            resolve_bound_slug,
+        )
+    except ImportError:
+        return None
+    from kiro_crew.artifacts import ArtifactError, get_default_store
+
+    bound_to = f"{_CREWMATE_SCOPE}{member}"
+    if not slug:
+        try:
+            slug = resolve_bound_slug(bound_to)
+        except (ArtifactError, ValueError) as exc:
+            # A binding this reader cannot even spell is content, not IO: an agent
+            # given a 500 for a member name learns nothing it can act on.
+            return PackageRead(None, STATE_ERROR, f"{member!r} is not a dashboard binding: {exc}")
+        except OSError as exc:
+            raise PackageReadError(f"the dashboard packages cannot be listed: {exc}") from exc
+        if not slug:
+            return PackageRead(None, STATE_EMPTY, f"{member} has no dashboard package yet")
+    try:
+        loaded = get_default_store().get(slug)
+    except ArtifactError:
+        # Absent, or a slug this caller named that holds nothing. EMPTY rather than
+        # ERROR: there is no package here to be broken.
+        return PackageRead(None, STATE_EMPTY, f"there is no dashboard package at {slug!r}")
+    except OSError as exc:
+        raise PackageReadError(f"the dashboard package {slug!r} cannot be read: {exc}") from exc
+    try:
+        package = parse_package(loaded.content or "")
+    except (ArtifactError, ValueError) as exc:
+        return PackageRead(
+            None, STATE_ERROR, f"the dashboard package at {slug!r} does not load: {exc}"
+        )
+    # AMENDMENT 4's rule, written once: forbidden when the package stored at this slug
+    # has a ``bound_to`` that does not name this member. String equality after the
+    # scope prefix is applied, so a package bound to a SESSION is not a member's either
+    # -- it names a slot key, and a crewmate reaching it is reaching past its own page.
+    #
+    # Unreachable when *slug* was resolved from *member*, because the scan matched on
+    # this same binding. It fires for a caller that named a slug, which is the caller
+    # the state exists for.
+    if str(package.get("bound_to") or "") != bound_to:
+        return PackageRead(
+            None,
+            STATE_FORBIDDEN,
+            f"the dashboard package at {slug!r} is bound to "
+            f"{str(package.get('bound_to') or '') or 'nothing'}, not to {bound_to}",
+        )
+    model = model_of(package, slug=slug, version=int(getattr(loaded, "version", 0) or 0))
+    try:
+        manifest = _manifest_of(model)
+    except _ModelUntranslatable as exc:
+        # The gate validated the package and this reader cannot express it as field
+        # specs -- a data type the mapping below has no row for. A disagreement between
+        # two readers, so it is a state with a sentence rather than a raise.
+        return PackageRead(None, STATE_ERROR, str(exc))
+    return PackageRead(
+        Instance(manifest=manifest, instance_version=model.version),
+        STATE_LIVE,
+        f"package {slug!r} version {model.version}, bound to {bound_to}",
+    )
+
+
+def _from_template_instance(slug: str, member: str) -> PackageRead:
+    """FALLBACK while the write gate is on the package line's own branch.
+
+    Resolves the Model from today's template instance store so the seam is exercised
+    end to end and current behaviour does not regress. This whole function goes when
+    :mod:`kiro_crew.artifact_store.dashboard_package` merges; nothing outside this
+    module reads it.
+
+    Its mapping is ``read_instance``'s existing rule verbatim: ``live`` / ``stale`` use
+    the stored copy's manifest, ``empty`` uses the default template's, ``error`` and
+    anything unrecognised have no manifest to validate against, and no instance with no
+    default answers :data:`STATE_EMPTY`. :data:`STATE_FORBIDDEN` cannot be reached here
+    -- the instance store is keyed by the member's own slug and has no binding to
+    disagree with.
     """
     # Resolved through the modules rather than imported at the top, which keeps the
     # boot-path rule the dashboard handlers follow and lets a test replace one.

@@ -1700,8 +1700,13 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
     # package lives. The check is against the Model this crewmate is actually running
     # rather than a builtin manifest a caller names -- which is the whole of the v3
     # change on this route, and why nothing else here reaches a template store.
+    #
+    # NO ARTIFACT SLUG IS PASSED. This route is keyed by the MEMBER, and `slug` here is
+    # the member's own slug, not the package artifact's; handing it over as one would
+    # name a package that does not exist. The reader resolves the artifact from the
+    # member's binding, which is why its first argument is optional.
     try:
-        package = await asyncio.to_thread(dashboard_package.read_package_model, slug, crew_name)
+        package = await asyncio.to_thread(dashboard_package.read_package_model, None, slug)
     except dashboard_package.PackageReadError as exc:
         # NOT a refusal. A read that failed says nothing about the write, so there is
         # no lesson to record and no field to blame.

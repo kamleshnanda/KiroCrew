@@ -2421,6 +2421,31 @@ async def test_a_write_is_refused_for_every_package_state_that_has_no_model(
         assert (await resp.json())["code"] == code
 
 
+async def test_the_write_route_asks_for_a_package_by_member_and_not_by_slug(vetted, monkeypatch):
+    """This route is keyed by the MEMBER and holds no artifact slug.
+
+    Its own ``slug`` is the member's, so handing that over as the package's would name
+    an artifact that does not exist. It passes ``None`` and lets the reader resolve the
+    package from the member's binding -- which is the reason that argument is optional.
+    """
+    from kiro_crew import dashboard_package
+
+    seen = []
+
+    def _read(slug, member):
+        seen.append((slug, member))
+        return dashboard_package.PackageRead(None, "empty", "stubbed")
+
+    monkeypatch.setattr(dashboard_package, "read_package_model", _read)
+    async with _client() as c:
+        await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": []},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+    assert seen == [(None, SLUG)], f"the route asked for {seen}"
+
+
 async def test_a_package_the_route_cannot_read_is_a_503_and_not_a_refusal(vetted, monkeypatch):
     """A read that FAILED says nothing about the write, so there is no lesson to
     record and no field to blame -- and a 400 would teach the agent a wrong one."""
